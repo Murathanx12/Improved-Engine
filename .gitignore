@@ -1,0 +1,11 @@
+venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+reports/*.pdf
+data_cache/
+*.parquet
+*.log
+.vscode/settings.json
