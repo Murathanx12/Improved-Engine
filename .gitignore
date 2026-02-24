@@ -1,10 +1,30 @@
+# Environment
 .env
+.venv/
+venv/
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
-.ipynb_checkpoints/
-reports/*.pdf
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Project
 data_cache/
+reports/*.pdf
 *.parquet
 *.log
-.vscode/settings.json
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db

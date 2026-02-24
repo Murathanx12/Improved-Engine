@@ -1,0 +1,238 @@
+# =====================================================================================
+# MARKET PREDICTION ENGINE — MASTER CONFIGURATION
+# =====================================================================================
+# This is the SINGLE file that controls all engine behavior.
+# API keys are in .env (gitignored). This file is safe to commit.
+# =====================================================================================
+
+
+# ── DATA SETTINGS ────────────────────────────────────────────────────────────────────
+data:
+  training_start: "1990-01-01"        # Fetch market data from this date
+  backtest_start: "2000-01-01"        # Walk-forward backtest window starts here
+  sector_start: "1998-01-01"          # Sector ETF data start (most ETFs launched ~1998)
+
+  # Yahoo Finance tickers
+  tickers:
+    index: "^GSPC"                    # S&P 500
+    vix: "^VIX"                       # CBOE Volatility Index
+    treasury_10y: "^TNX"              # 10-Year Treasury Yield
+    treasury_3m: "^IRX"               # 13-Week T-Bill (used as 3-month proxy)
+    treasury_30y: "^TYX"              # 30-Year Treasury Yield
+    high_yield: "HYG"                 # High Yield Corporate Bond ETF
+    inv_grade: "LQD"                  # Investment Grade Corporate Bond ETF
+    gold: "GC=F"                      # Gold Futures
+    nasdaq: "^IXIC"                   # NASDAQ Composite
+    russell: "^RUT"                   # Russell 2000 Small Cap
+
+  # Sector ETFs (name → ticker)
+  sectors:
+    Technology: XLK
+    Healthcare: XLV
+    Financials: XLF
+    Energy: XLE
+    "Consumer Disc.": XLY
+    "Consumer Staples": XLP
+    Industrials: XLI
+    Utilities: XLU
+    "Real Estate": XLRE
+    Materials: XLB
+    Communications: XLC
+
+  # FRED series IDs (for Phase II — FRED integration)
+  fred_series:
+    yield_spread: T10Y3M              # 10Y-3M Treasury spread (recession predictor)
+    sahm_rule: SAHMREALTIME           # Sahm Rule recession indicator
+    recession_prob: RECPROUSM156N     # Chauvet-Piger smoothed recession probability
+    unemployment: UNRATE              # Unemployment rate
+    cpi: CPIAUCSL                     # Consumer Price Index
+    fed_funds: FEDFUNDS               # Federal Funds Rate
+    consumer_sentiment: UMCSENT       # U of Michigan Consumer Sentiment
+    vix_fred: VIXCLS                  # VIX (FRED version, for longer history)
+
+
+# ── SIMULATION SETTINGS ─────────────────────────────────────────────────────────────
+simulation:
+  forecast_years: 5                   # Projection horizon
+  num_simulations: 10000              # Monte Carlo paths
+  trading_days_per_year: 252          # Standard trading days
+
+  # Jump-diffusion parameters
+  # The jump component models SUDDEN crashes only (flash crashes, COVID, Lehman).
+  # Gradual bear markets emerge from t-distribution tails + regime shifts.
+  # Historical sudden crashes: ~1 every 14 years (2001, 2008, 2020)
+  jump_diffusion:
+    annual_rate: 0.07                 # ~7% annual prob of sudden jump (~1/14yr)
+    mean: -0.10                       # Average jump size (-10%)
+    std: 0.05                         # Jump size volatility
+    t_degrees_of_freedom: 8           # Student-t df (higher = lighter tails)
+
+  # Return constraints
+  max_5y_return: 3.0                  # 300% cap (prevents runaway simulations)
+  max_annual_volatility: 1.2          # 120% vol cap
+
+  # Valuation constraints
+  valuation:
+    long_run_real_return: 0.067       # ~6.7% real long-run equity return
+    inflation_target: 0.025           # 2.5% expected inflation
+    cape_long_run_average: 17.0       # Long-run Shiller CAPE average
+    cape_penalty_factor: 0.03         # Penalty per unit of CAPE deviation
+
+
+# ── BACKTESTING SETTINGS ────────────────────────────────────────────────────────────
+backtest:
+  step_months: 3                      # Predict every N months
+  lookback_years: 10                  # History used per prediction point
+  forward_days: 252                   # Predict 1 year ahead
+  simulations_per_point: 1000         # Sims per backtest point (speed vs accuracy)
+  transaction_cost: 0.001             # 0.1% per trade
+
+
+# ── RISK SETTINGS ────────────────────────────────────────────────────────────────────
+risk:
+  crash_threshold: 0.20               # 20% drawdown = crash
+  severe_threshold: 0.35              # 35% drawdown = severe crash
+  confidence_level: 0.95              # VaR/CVaR confidence
+  crash_exit_recovery: 0.05           # Exit crash when within 5% of peak
+
+  # Risk score indicator weights (9-factor composite)
+  # Higher weight = more influence on the composite score
+  indicator_weights:
+    vix: 2.0                          # Fear gauge
+    yield_curve: 1.8                  # Recession predictor (10Y - 3M)
+    credit_spread: 1.9                # Corporate debt stress (LQD/HYG)
+    long_yield_vol: 1.0               # Bond market disruption
+    momentum_exhaustion: 1.5          # Extreme moves (>2σ from mean)
+    short_term_vol: 1.3               # 20-day rolling vol regime
+    gold_stock_ratio: 1.2             # Flight to safety signal
+    market_breadth: 1.0               # Narrow leadership (NASDAQ/S&P)
+    small_cap_divergence: 1.1         # Russell 2000 vs S&P 500
+
+  # Regime detection thresholds
+  regimes:
+    high_vol_threshold: 0.30          # Annual vol above this = "Volatile"
+    bull_return_threshold: 0.05       # Annual return above this = "Bull"
+    vix_stress_threshold: 25          # VIX above this = stress signal
+    risk_stress_threshold: 1.5        # Risk score above this = stress signal
+    vix_calm_threshold: 16            # VIX below this in Bear = recovery
+    risk_calm_threshold: -0.5         # Risk score below this = calm
+
+
+# ── SCENARIO DEFINITIONS ─────────────────────────────────────────────────────────────
+# These define the base probabilities and parameters for each scenario.
+# Probabilities are adjusted dynamically at runtime based on regime, risk, VIX, etc.
+scenarios:
+  "Base Case":
+    base_probability: 0.30
+    return_multiplier: 1.0            # Multiplied by institutional consensus return
+    absolute_return: null              # If set, overrides return_multiplier
+    volatility: 0.17
+    crash_multiplier: 1.0
+    category: neutral                 # bullish / neutral / bearish
+    description: "Historical trends continue with moderate growth"
+
+  "AI Productivity Boom":
+    base_probability: 0.15
+    return_multiplier: 1.50
+    absolute_return: null
+    volatility: 0.22
+    crash_multiplier: 0.6
+    category: bullish
+    description: "AI drives sustained productivity gains across sectors"
+
+  "Soft Landing":
+    base_probability: 0.15
+    return_multiplier: 0.80
+    absolute_return: null
+    volatility: 0.15
+    crash_multiplier: 0.8
+    category: bullish
+    description: "Fed engineers 2-3% inflation, steady growth, no recession"
+
+  "Market Correction":
+    base_probability: 0.12
+    return_multiplier: 0.40
+    absolute_return: null
+    volatility: 0.24
+    crash_multiplier: 1.5
+    category: neutral
+    description: "Valuation normalization, P/E compression, slower growth"
+
+  "Stagflation":
+    base_probability: 0.08
+    return_multiplier: null
+    absolute_return: 0.01             # ~1% nominal ≈ negative real
+    volatility: 0.23
+    crash_multiplier: 1.8
+    category: bearish
+    description: "1970s replay: persistent inflation + stagnant growth"
+
+  "Recession":
+    base_probability: 0.08
+    return_multiplier: null
+    absolute_return: -0.02            # -2% annual (includes partial recovery)
+    volatility: 0.30
+    crash_multiplier: 2.5
+    category: bearish
+    description: "Economic contraction, rising unemployment, credit stress"
+
+  "AI Bubble Collapse":
+    base_probability: 0.06
+    return_multiplier: null
+    absolute_return: -0.03            # -3% annual (tech crash + partial recovery)
+    volatility: 0.32
+    crash_multiplier: 2.0
+    category: bearish
+    description: "Tech mega-cap concentration unwinds, Nasdaq -40%"
+
+  "Geopolitical Crisis":
+    base_probability: 0.06
+    return_multiplier: null
+    absolute_return: -0.05            # -5% annual (severe multi-year crisis)
+    volatility: 0.35
+    crash_multiplier: 3.0
+    category: bearish
+    description: "Major conflict, supply chains collapse, sanctions escalate"
+
+
+# ── INSTITUTIONAL BENCHMARKS ─────────────────────────────────────────────────────────
+# Used to anchor Monte Carlo drift to consensus instead of pure historical returns.
+institutional_benchmarks:
+  Vanguard:         { annual: 0.047, horizon: "10Y", note: "VCMM 10-year forecast" }
+  Schwab:           { annual: 0.059, horizon: "10Y", note: "Long-term capital market expectations" }
+  BlackRock:        { annual: 0.052, horizon: "10Y", note: "Capital market assumptions" }
+  "Morgan Stanley": { annual: 0.080, horizon: "5Y",  note: "2026 bull case estimate" }
+  "Goldman Sachs":  { annual: 0.030, horizon: "10Y", note: "2024 10-yr forecast (low due to concentration)" }
+  "J.P. Morgan":    { annual: 0.061, horizon: "10Y", note: "Long-term capital market assumptions" }
+  AQR:              { annual: 0.042, horizon: "10Y", note: "Expected real + inflation" }
+  "Research Affiliates": { annual: 0.048, horizon: "10Y", note: "RAFI expected return" }
+
+  # Adjustment: slight upward for 5Y vs 10Y horizon
+  horizon_adjustment: 1.05
+
+
+# ── STOCK ANALYSIS ───────────────────────────────────────────────────────────────────
+stocks:
+  screener_count: 20                  # Number of stocks selected from top sectors
+  max_cagr_cap: 0.50                  # 50% max annual growth cap for individual stocks
+  min_history_days: 252               # Minimum trading days required for analysis
+
+
+# ── REPORTING ────────────────────────────────────────────────────────────────────────
+reporting:
+  output_dir: "reports"
+  filename_template: "Market_Prediction_v{version}_Report.pdf"
+  version: "4.5"
+
+  # Chart style
+  chart_style: "dark_background"
+  chart_dpi: 150
+  figure_width: 7                     # inches
+  figure_height: 3.5                  # inches
+
+
+# ── CACHE SETTINGS ───────────────────────────────────────────────────────────────────
+cache:
+  directory: "data_cache"
+  ttl_hours: 1                        # Re-fetch data after this many hours
+  format: "parquet"                   # parquet or csv
