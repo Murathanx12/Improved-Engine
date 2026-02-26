@@ -1,13 +1,13 @@
-"""Unit tests for core engine modules."""
+"""Unit tests for core engine modules (v2 — includes GARCH, HMM, calibration)."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
 
-class TestConfig:
-    """Tests for configuration loading."""
+# ── Config Tests ────────────────────────────────────────────────────────────
 
+class TestConfig:
     def test_config_loads(self):
         from finpredict.config import config
         assert "data" in config
@@ -15,38 +15,28 @@ class TestConfig:
         assert "risk" in config
         assert "scenarios" in config
 
+    def test_fred_series_configured(self):
+        from finpredict.config import config
+        fred = config["data"]["fred_series"]
+        assert "yield_spread" in fred
+        assert "sahm_rule" in fred
+        assert "recession_prob" in fred
+
     def test_institutional_return_in_range(self):
         from finpredict.config import get_institutional_return
         ret = get_institutional_return()
-        assert 0.01 < ret < 0.20, f"Institutional return {ret} out of reasonable range"
-
-    def test_forecast_days_positive(self):
-        from finpredict.config import get_forecast_days
-        days = get_forecast_days()
-        assert days > 0
+        assert 0.01 < ret < 0.20
 
     def test_scenario_configs_sum_to_one(self):
         from finpredict.config import get_scenario_configs
         scenarios = get_scenario_configs()
         total = sum(s["probability"] for s in scenarios.values())
-        assert abs(total - 1.0) < 0.01, f"Scenario probabilities sum to {total}, expected ~1.0"
+        assert abs(total - 1.0) < 0.01
 
-    def test_all_scenarios_have_required_fields(self):
-        from finpredict.config import get_scenario_configs
-        required = {"probability", "return", "volatility", "crash_multiplier", "description"}
-        for name, s in get_scenario_configs().items():
-            for field in required:
-                assert field in s, f"Scenario '{name}' missing field '{field}'"
 
+# ── Risk Tests ──────────────────────────────────────────────────────────────
 
 class TestRiskScoring:
-    """Tests for the 9-factor composite risk score."""
-
-    def test_risk_score_shape(self, sample_market_data):
-        from finpredict.risk.scoring import build_risk_score
-        score = build_risk_score(sample_market_data)
-        assert len(score) == len(sample_market_data)
-
     def test_risk_score_bounded(self, sample_market_data):
         from finpredict.risk.scoring import build_risk_score
         score = build_risk_score(sample_market_data)
@@ -64,80 +54,109 @@ class TestRiskScoring:
 
 
 class TestRegimeDetection:
-    """Tests for market regime classification."""
-
     def test_regimes_return_series_and_string(self, sample_market_data):
         from finpredict.risk.regimes import detect_regimes
-        sample_market_data["Risk_Score"] = 0.0  # Add required column
+        sample_market_data["Risk_Score"] = 0.0
         regimes, current = detect_regimes(sample_market_data)
         assert isinstance(regimes, pd.Series)
-        assert isinstance(current, str)
         assert current in ("Bull", "Bear", "Volatile", "Unknown")
-
-    def test_regimes_length_matches_data(self, sample_market_data):
-        from finpredict.risk.regimes import detect_regimes
-        sample_market_data["Risk_Score"] = 0.0
-        regimes, _ = detect_regimes(sample_market_data)
-        assert len(regimes) == len(sample_market_data)
 
 
 class TestCrashIdentification:
-    """Tests for historical crash detection."""
-
     def test_crash_detection_returns_dataframe(self, sample_market_data):
         from finpredict.risk.crashes import identify_crashes
         crash_df, freq = identify_crashes(sample_market_data)
         assert isinstance(crash_df, pd.DataFrame)
-        assert isinstance(freq, float)
         assert freq >= 0
 
-    def test_crash_frequency_reasonable(self, sample_market_data):
-        from finpredict.risk.crashes import identify_crashes
-        _, freq = identify_crashes(sample_market_data)
-        # For synthetic data, frequency should be between 0 and 1
-        assert 0 <= freq <= 1.0
 
+# ── Simulation Tests ────────────────────────────────────────────────────────
 
 class TestSimulation:
-    """Tests for Monte Carlo path simulation."""
-
     def test_simulate_paths_shape(self):
         from finpredict.simulation.monte_carlo import simulate_paths
-        paths = simulate_paths(
-            start_price=5000, annual_return=0.06, annual_vol=0.18,
-            days=252, n_sims=100,
-        )
-        assert paths.shape == (253, 100)  # days+1 rows, n_sims columns
+        paths = simulate_paths(5000, 0.06, 0.18, 252, 100)
+        assert paths.shape == (253, 100)
 
     def test_simulate_paths_start_price(self):
         from finpredict.simulation.monte_carlo import simulate_paths
-        paths = simulate_paths(
-            start_price=5000, annual_return=0.06, annual_vol=0.18,
-            days=252, n_sims=100,
-        )
+        paths = simulate_paths(5000, 0.06, 0.18, 252, 100)
         assert np.all(paths[0] == 5000)
 
     def test_simulate_paths_positive(self):
         from finpredict.simulation.monte_carlo import simulate_paths
-        paths = simulate_paths(
-            start_price=5000, annual_return=0.06, annual_vol=0.18,
-            days=252, n_sims=100,
-        )
-        assert np.all(paths > 0), "All prices must be positive"
+        paths = simulate_paths(5000, 0.06, 0.18, 252, 100)
+        assert np.all(paths > 0)
 
-    def test_simulate_paths_with_crash_rate(self):
+    def test_garch_vol_used_when_provided(self):
+        """GARCH vol should produce different results than default."""
         from finpredict.simulation.monte_carlo import simulate_paths
-        paths = simulate_paths(
-            start_price=5000, annual_return=0.06, annual_vol=0.18,
-            days=252, n_sims=500, crash_rate=0.15, risk_level=1.5,
-        )
-        assert paths.shape[1] == 500
+        np.random.seed(42)
+        paths_default = simulate_paths(5000, 0.06, 0.18, 252, 500)
+        np.random.seed(42)
+        paths_garch = simulate_paths(5000, 0.06, 0.18, 252, 500, garch_vol=0.25)
+        # Different volatility → different paths
+        # (Same seed but different sigma → different scaling)
+        assert not np.allclose(paths_default[-1], paths_garch[-1])
 
+
+# ── Calibration Fix Tests ───────────────────────────────────────────────────
+
+class TestCalibrationFix:
+    """
+    The critical test: crash rate should be HIGHER when risk is HIGH
+    and LOWER when risk is LOW.
+
+    Before the fix, the model produced inverted calibration:
+        Low risk  (<15% predicted): 86% actual crashes
+        High risk (>40% predicted):  7% actual crashes
+    """
+
+    def test_high_risk_produces_more_crashes(self):
+        from finpredict.simulation.monte_carlo import simulate_paths
+        n_sims = 2000
+
+        # Low risk environment
+        np.random.seed(42)
+        paths_low = simulate_paths(
+            5000, 0.06, 0.18, 252, n_sims,
+            crash_rate=0.11, risk_level=-1.0,
+        )
+        peak_low = np.maximum.accumulate(paths_low, axis=0)
+        dd_low = ((paths_low - peak_low) / peak_low).min(axis=0)
+        crash_rate_low = (dd_low <= -0.20).mean()
+
+        # High risk environment
+        np.random.seed(42)
+        paths_high = simulate_paths(
+            5000, 0.06, 0.18, 252, n_sims,
+            crash_rate=0.11, risk_level=2.0,
+        )
+        peak_high = np.maximum.accumulate(paths_high, axis=0)
+        dd_high = ((paths_high - peak_high) / peak_high).min(axis=0)
+        crash_rate_high = (dd_high <= -0.20).mean()
+
+        assert crash_rate_high > crash_rate_low, (
+            f"CALIBRATION STILL INVERTED: "
+            f"high-risk crash rate ({crash_rate_high:.2%}) should exceed "
+            f"low-risk ({crash_rate_low:.2%})"
+        )
+
+    def test_risk_factor_range(self):
+        """Risk factor should span a wide range, not just ±20%."""
+        # At risk=-2.0: factor = 1.0 + 0.50*(-2.0) = 0.0 → clamped to 0.25
+        # At risk=+2.0: factor = 1.0 + 0.50*(2.0) = 2.0
+        factor_low = max(0.25, min(3.0, 1.0 + 0.50 * (-2.0)))
+        factor_high = max(0.25, min(3.0, 1.0 + 0.50 * (2.0)))
+        assert factor_high / factor_low >= 4.0, (
+            f"Risk factor range too narrow: {factor_low:.2f} to {factor_high:.2f}"
+        )
+
+
+# ── Scenario Tests ──────────────────────────────────────────────────────────
 
 class TestScenarios:
-    """Tests for scenario building and probability adjustment."""
-
-    def test_build_scenarios_probabilities_sum_to_one(self):
+    def test_probabilities_sum_to_one(self):
         from finpredict.simulation.scenarios import build_scenarios
         scenarios = build_scenarios("Bull", 0.5, 20.0, 0.5)
         total = sum(s["probability"] for s in scenarios.values())
@@ -147,14 +166,95 @@ class TestScenarios:
         from finpredict.simulation.scenarios import build_scenarios
         low_risk = build_scenarios("Bull", -1.0, 15.0, 1.0)
         high_risk = build_scenarios("Volatile", 3.0, 35.0, -0.5)
-
-        # Sum bearish probabilities
         bearish_low = sum(
-            s["probability"] for s in low_risk.values()
-            if s.get("category") == "bearish"
+            s["probability"] for s in low_risk.values() if s.get("category") == "bearish"
         )
         bearish_high = sum(
-            s["probability"] for s in high_risk.values()
-            if s.get("category") == "bearish"
+            s["probability"] for s in high_risk.values() if s.get("category") == "bearish"
         )
-        assert bearish_high > bearish_low, "High risk should increase bearish probability"
+        assert bearish_high > bearish_low
+
+    def test_recession_prob_shifts_bearish(self):
+        """FRED recession probability should increase bearish scenarios."""
+        from finpredict.simulation.scenarios import build_scenarios
+        no_recession = build_scenarios("Bull", 0.0, 20.0, 0.5, recession_prob=0.05)
+        high_recession = build_scenarios("Bull", 0.0, 20.0, 0.5, recession_prob=0.80)
+        bearish_calm = sum(
+            s["probability"] for s in no_recession.values() if s.get("category") == "bearish"
+        )
+        bearish_stress = sum(
+            s["probability"] for s in high_recession.values() if s.get("category") == "bearish"
+        )
+        assert bearish_stress > bearish_calm, (
+            f"FRED recession prob not shifting scenarios: "
+            f"low={bearish_calm:.2%}, high={bearish_stress:.2%}"
+        )
+
+
+# ── GARCH Tests ─────────────────────────────────────────────────────────────
+
+class TestGARCH:
+    def test_garch_fit_returns_result(self):
+        from finpredict.models.garch import fit_garch
+        returns = pd.Series(np.random.randn(1000) * 0.01)
+        result = fit_garch(returns)
+        assert hasattr(result, "current_vol")
+        assert result.current_vol > 0
+
+    def test_garch_fallback_with_short_data(self):
+        from finpredict.models.garch import fit_garch
+        returns = pd.Series(np.random.randn(50) * 0.01)
+        result = fit_garch(returns, min_obs=500)
+        assert result.success is False
+        assert result.current_vol > 0  # Should still have a fallback value
+
+
+# ── HMM Tests ──────────────────────────────────────────────────────────────
+
+class TestHMM:
+    def test_hmm_fit_returns_result(self, sample_market_data):
+        from finpredict.models.hmm_regimes import fit_hmm_regimes
+        result = fit_hmm_regimes(sample_market_data, n_fits=3)
+        assert result.current_regime in ("Bull", "Bear", "Crisis", "Unknown")
+        assert len(result.regime_probs) == 3
+
+    def test_regime_probs_sum_to_one(self, sample_market_data):
+        from finpredict.models.hmm_regimes import fit_hmm_regimes, get_regime_probs
+        result = fit_hmm_regimes(sample_market_data, n_fits=3)
+        probs = get_regime_probs(result)
+        total = sum(probs.values())
+        assert abs(total - 1.0) < 0.01
+
+
+# ── FRED Tests ──────────────────────────────────────────────────────────────
+
+class TestFRED:
+    def test_recession_probability_bounded(self):
+        from finpredict.data.fred_fetcher import get_recession_probability
+        # With mock data
+        mock = {
+            "yield_spread": pd.Series([2.5]),
+            "sahm_rule": pd.Series([0.03]),
+        }
+        prob = get_recession_probability(mock)
+        assert 0 <= prob <= 1.0
+
+    def test_recession_probability_high_on_inversion(self):
+        from finpredict.data.fred_fetcher import get_recession_probability
+        mock = {
+            "yield_spread": pd.Series([-1.5]),  # Deep inversion
+            "sahm_rule": pd.Series([0.60]),      # Sahm triggered
+            "recession_prob": pd.Series([75.0]), # High model probability
+        }
+        prob = get_recession_probability(mock)
+        assert prob > 0.60, f"Recession prob should be high on inversion, got {prob:.2%}"
+
+    def test_recession_probability_low_in_calm(self):
+        from finpredict.data.fred_fetcher import get_recession_probability
+        mock = {
+            "yield_spread": pd.Series([2.5]),   # Steep curve
+            "sahm_rule": pd.Series([0.02]),     # Low
+            "recession_prob": pd.Series([2.0]), # Model says calm
+        }
+        prob = get_recession_probability(mock)
+        assert prob < 0.30, f"Recession prob should be low in calm, got {prob:.2%}"

@@ -14,7 +14,7 @@ Usage:
 import os
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 
 from reportlab.lib.pagesizes import letter
@@ -264,7 +264,9 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
 
     inst_rows = []
     model_annual = mc_results['annual_return_pct']
-    for name, info in INSTITUTIONAL_BENCHMARKS.items():
+    for name, info in config["institutional_benchmarks"].items():
+        if not isinstance(info, dict) or "annual" not in info:
+            continue
         implied_5y = current_price * (1 + info['annual']) ** 5
         variance = ((mc_results['final_mean'] / implied_5y) - 1) * 100
         inst_rows.append([

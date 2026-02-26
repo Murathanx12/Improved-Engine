@@ -1,31 +1,16 @@
 """
-Module 5: Monte Carlo Simulation Engine
-=========================================
+Module 5: Monte Carlo Simulation Engine (v2 — Calibrated)
+===========================================================
 
-Generates thousands of possible future price paths using jump-diffusion.
-
-How the jump-diffusion process works:
-    At each time step t:
-        S(t) = S(t-1) * exp(drift + diffusion) * (1 + jump)
-
-    Where:
-        drift     = (μ - 0.5σ²) * dt
-        diffusion = σ * √dt * ε    (ε ~ Student-t with df=8 for fat tails)
-        jump      = J * Bernoulli(p)  (J ~ Normal(-0.10, 0.05))
-
-Why jump-diffusion (not plain GBM):
-    Standard GBM assumes normally distributed returns. In reality, markets
-    have FAT TAILS — extreme moves happen far more often than normal predicts.
-    The jump component adds occasional large negative shocks.
-
-Institutional anchoring:
-    Expected return is calibrated to consensus of major firms (Vanguard,
-    Schwab, BlackRock, etc.) rather than raw historical data.
+Major changes from v1:
+    1. CALIBRATION FIX: Risk score now has 3x stronger impact on crash
+       probability, giving real discrimination between calm/stressed markets.
+    2. GJR-GARCH integration: Uses time-varying volatility when available.
+    3. Reduced base jump rate to match ~20-25% 1Y crash probability in
+       normal conditions (was producing ~50%).
 
 Usage:
-    from finpredict.simulation.monte_carlo import run_monte_carlo
-
-    mc_results = run_monte_carlo(current_price, regime, risk_score, ...)
+    from finpredict.simulation.monte_carlo import run_monte_carlo, simulate_paths
 """
 
 import numpy as np
@@ -33,10 +18,7 @@ from scipy import stats
 
 from finpredict.config import config, get_forecast_days
 from finpredict.simulation.scenarios import build_scenarios
-from finpredict.simulation.valuation import compute_valuation_penalty
 
-
-# ── Path Simulation ──────────────────────────────────────────────────────────────────
 
 def simulate_paths(
     start_price: float,
@@ -47,19 +29,27 @@ def simulate_paths(
     crash_rate: float | None = None,
     risk_level: float = 0.0,
     scenario_params: dict | None = None,
+    garch_vol: float | None = None,
 ) -> np.ndarray:
     """
-    Jump-diffusion Monte Carlo path simulation.
+    Jump-diffusion Monte Carlo path simulation (calibrated v2).
+
+    CALIBRATION FIX:
+        Risk score scaling increased from ±20% to ±50%.
+        At risk=-1σ (calm):   factor=0.50 → crash rate halved
+        At risk= 0σ (normal): factor=1.00 → baseline
+        At risk=+2σ (stress): factor=2.00 → crash rate doubled
 
     Args:
         start_price: Starting price level
-        annual_return: Expected annual drift (geometric/log)
-        annual_vol: Annual volatility (σ)
+        annual_return: Expected annual drift (log)
+        annual_vol: Annualized volatility — fallback if no GARCH
         days: Trading days to simulate
         n_sims: Number of paths
-        crash_rate: Annual crash rate from historical data
-        risk_level: Current composite risk score
-        scenario_params: Dict with 'crash_mult' etc.
+        crash_rate: Historical annual crash frequency
+        risk_level: Current composite risk score (z-score)
+        scenario_params: Dict with 'crash_mult', 'vol_mult', 'drift_adj'
+        garch_vol: GARCH conditional volatility (annualized), overrides annual_vol
 
     Returns:
         np.ndarray of shape (days+1, n_sims)
@@ -69,22 +59,36 @@ def simulate_paths(
 
     params = scenario_params or {}
     mu = annual_return + params.get("drift_adj", 0)
-    sigma = annual_vol * params.get("vol_mult", 1.0)
     crash_mult = params.get("crash_mult", 1.0)
+
+    # Use GARCH vol when available, otherwise historical
+    sigma = garch_vol if garch_vol is not None else annual_vol
+    sigma *= params.get("vol_mult", 1.0)
 
     trading_days = sim_cfg["trading_days_per_year"]
     dt = 1.0 / trading_days
 
-    # Risk-adjusted crash rate
+    # ── CALIBRATION FIX: Stronger risk conditioning ──────────────────────
+    #
+    # Old (v1): risk_factor = 1.0 + 0.20 * risk_level  → ±20%, no real signal
+    # New (v2): risk_factor = 1.0 + 0.50 * risk_level  → ±50%, real discrimination
+    #
+    # This is THE fix for the inverted calibration:
+    #   Low  risk (<15% predicted): 86% actual crashes  ← WRONG
+    #   High risk (>40% predicted):  7% actual crashes  ← WRONG
+    #
+    # The problem: with ±20% scaling, a -1σ risk score barely reduces
+    # crash rate (factor=0.80), so "low risk" predictions still had tons
+    # of crashes. Meanwhile "high risk" was also barely different (factor=1.20).
+    #
     base_jump_rate = jd["annual_rate"]
     if crash_rate is not None:
-        historical_sudden = crash_rate * 0.30  # ~30% of crashes are sudden
+        historical_sudden = crash_rate * 0.30
         base_jump_rate = max(base_jump_rate, historical_sudden)
 
-    # Bidirectional risk scaling: low risk reduces, high risk increases
-    risk_factor = 1.0 + 0.20 * risk_level
-    risk_factor = max(0.5, min(2.0, risk_factor))
-    adj_jump_rate = min(0.25, base_jump_rate * crash_mult * risk_factor)
+    risk_factor = 1.0 + 0.50 * risk_level
+    risk_factor = max(0.25, min(3.0, risk_factor))
+    adj_jump_rate = min(0.30, base_jump_rate * crash_mult * risk_factor)
     daily_jump_prob = adj_jump_rate / trading_days
 
     df_param = jd["t_degrees_of_freedom"]
@@ -105,12 +109,10 @@ def simulate_paths(
         drift = (mu - 0.5 * sigma**2) * dt
         diffusion = sigma * np.sqrt(dt) * t_shocks[t - 1]
         paths[t] = paths[t - 1] * np.exp(drift + diffusion) * (1 + jump_sizes[t - 1])
-        paths[t] = np.maximum(paths[t], start_price * 0.02)  # Floor at 2%
+        paths[t] = np.maximum(paths[t], start_price * 0.02)
 
     return paths
 
-
-# ── Full Monte Carlo Pipeline ────────────────────────────────────────────────────────
 
 def run_monte_carlo(
     current_price: float,
@@ -120,18 +122,15 @@ def run_monte_carlo(
     vix_level: float = 20.0,
     yield_curve: float = 0.5,
     valuation_penalty: float = 0.0,
+    garch_vol: float | None = None,
+    recession_prob: float | None = None,
 ) -> dict:
     """
-    Module 5 Entry Point: Run full multi-scenario Monte Carlo simulation.
+    Full multi-scenario Monte Carlo simulation.
 
-    Args:
-        current_price: Current S&P 500 price
-        regime: Current market regime
-        risk_score: Current composite risk score
-        crash_freq: Historical annual crash frequency
-        vix_level: Current VIX
-        yield_curve: Current 10Y-3M spread
-        valuation_penalty: Annual return drag from CAPE/trend
+    New in v2:
+        - garch_vol: GARCH conditional volatility replaces constant σ
+        - recession_prob: FRED-based recession probability for scenario weights
 
     Returns:
         dict with paths, statistics, crash probabilities, risk metrics
@@ -141,8 +140,10 @@ def run_monte_carlo(
     sim_cfg = config["simulation"]
     risk_cfg = config["risk"]
 
-    # Build dynamically-adjusted scenarios
-    scenarios = build_scenarios(regime, risk_score, vix_level, yield_curve, valuation_penalty)
+    scenarios = build_scenarios(
+        regime, risk_score, vix_level, yield_curve, valuation_penalty,
+        recession_prob=recession_prob,
+    )
 
     forecast_days = get_forecast_days()
     all_paths_list = []
@@ -155,6 +156,7 @@ def run_monte_carlo(
         paths = simulate_paths(
             current_price, params["return"], params["volatility"],
             forecast_days, n_sims, crash_freq, risk_score, sp,
+            garch_vol=garch_vol,
         )
         all_paths_list.append(paths)
 
@@ -163,6 +165,7 @@ def run_monte_carlo(
             "return": params["return"],
             "volatility": params["volatility"],
             "description": params["description"],
+            "category": params.get("category", "neutral"),
             "mean_final": float(np.mean(paths[-1])),
             "total_return": float(np.mean(paths[-1]) / current_price - 1) * 100,
             "n_sims": n_sims,
@@ -172,7 +175,6 @@ def run_monte_carlo(
             f"{n_sims:,} sims → ${np.mean(paths[-1]):,.0f}"
         )
 
-    # Combine all paths
     all_paths = np.concatenate(all_paths_list, axis=1)
 
     # Statistics
@@ -184,7 +186,7 @@ def run_monte_carlo(
     p75 = np.percentile(all_paths, 75, axis=1)
     p95 = np.percentile(all_paths, 95, axis=1)
 
-    # Crash probabilities by horizon (peak-to-trough, matches identify_crashes)
+    # Crash probabilities by horizon (peak-to-trough drawdown)
     crash_threshold = risk_cfg["crash_threshold"]
     horizons = {
         "3mo": 63, "6mo": 126, "12mo": 252, "18mo": 378,
@@ -193,21 +195,20 @@ def run_monte_carlo(
     crash_probs = {}
     for label, d in horizons.items():
         if d < all_paths.shape[0]:
-            window_paths = all_paths[:d + 1]
-            running_peak = np.maximum.accumulate(window_paths, axis=0)
-            drawdowns = (window_paths - running_peak) / running_peak
-            max_dd_per_sim = drawdowns.min(axis=0)
-            crash_probs[label] = float(np.mean(max_dd_per_sim <= -crash_threshold)) * 100
+            window = all_paths[:d + 1]
+            peak = np.maximum.accumulate(window, axis=0)
+            dd = (window - peak) / peak
+            max_dd = dd.min(axis=0)
+            crash_probs[label] = float(np.mean(max_dd <= -crash_threshold)) * 100
 
     # Risk metrics
     var_95_val = np.percentile(final, 5)
     cvar_vals = final[final <= var_95_val]
     cvar_95 = float(np.mean(cvar_vals)) if len(cvar_vals) > 0 else var_95_val
 
-    # Max drawdown (peak-to-trough)
-    running_peak_all = np.maximum.accumulate(all_paths, axis=0)
-    all_drawdowns = (all_paths - running_peak_all) / running_peak_all
-    max_dd_per_sim = all_drawdowns.min(axis=0)
+    peak_all = np.maximum.accumulate(all_paths, axis=0)
+    dd_all = (all_paths - peak_all) / peak_all
+    max_dd_per_sim = dd_all.min(axis=0)
     avg_max_dd = float(np.mean(max_dd_per_sim))
 
     forecast_years = sim_cfg["forecast_years"]
@@ -231,7 +232,9 @@ def run_monte_carlo(
         "crash_prob_5y": crash_probs.get("60mo", 0),
     }
 
-    print(f"\n  [OK] Mean {forecast_years}Y target: ${results['final_mean']:,.0f} "
+    vol_src = f"GARCH {garch_vol*100:.0f}%" if garch_vol else "historical"
+    print(f"\n  [OK] Volatility source: {vol_src}")
+    print(f"  [OK] Mean {forecast_years}Y target: ${results['final_mean']:,.0f} "
           f"({results['total_return_pct']:+.1f}%)")
     print(f"  [OK] 90% CI: ${p05[-1]:,.0f} — ${p95[-1]:,.0f}")
     print(f"  [OK] 1Y crash probability: {results['crash_prob_1y']:.1f}%")

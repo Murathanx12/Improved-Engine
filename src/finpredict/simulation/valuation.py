@@ -32,7 +32,7 @@ def _fetch_cape_ratio() -> float | None:
     """
     # Method 1: Shiller's own dataset
     try:
-        url = "http://www.econ.yale.edu/~shiller/data/ie_data.xls"
+        url = "https://econ.yale.edu/~shiller/data/ie_data.xls"
         df = pd.read_excel(url, sheet_name="Data", skiprows=7, usecols=[0, 1, 10])
         df.columns = ["Date", "Price", "CAPE"]
         df = df.dropna(subset=["CAPE"])
