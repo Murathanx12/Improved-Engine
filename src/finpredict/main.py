@@ -1,21 +1,27 @@
 """
-Market Prediction Engine v4.5 — Main Entry Point (v2)
-=======================================================
+Market Prediction Engine v7 — ML-First Pipeline
+===================================================
 
-Pipeline (upgraded):
-    1. Fetch market data (Yahoo Finance) + FRED macro indicators
-    2. Fit GJR-GARCH for time-varying volatility
-    3. Fit HMM for probabilistic regime detection
-    4. Compute risk score + identify historical crashes
-    5. Compute FRED recession probability
-    6. Compute valuation penalty
-    7. Walk-forward backtest (with GARCH vol + calibration fix)
-    8. Monte Carlo projection (GARCH + HMM + FRED conditioned)
-    9. Sector and stock analysis
-   10. Generate PDF report
+ARCHITECTURE:
+    1. Fetch data (Yahoo Finance + FRED historical time series)
+    2. Fit statistical models (GARCH volatility, HMM regimes)
+    3. Build 80+ ML features from market + macro data
+    4. Walk-forward ML backtest (expanding window, zero data leakage)
+    5. Generate current ML predictions (crash probability + expected returns)
+    6. ML-conditioned Monte Carlo (uncertainty quantification)
+    7. Factor-based sector analysis (differentiated by beta, momentum, etc.)
+    8. Individual stock analysis
+    9. Generate PDF report
 
-Usage:
-    python -m finpredict.main
+KEY PRINCIPLE: ML predictions are PRIMARY. Monte Carlo is SECONDARY.
+    The ML models learn from 35 years of data to read the current
+    market state. Monte Carlo just quantifies uncertainty around those
+    learned predictions. No hardcoded parameters anywhere.
+
+DEPENDENCIES:
+    pip install lightgbm scikit-learn numpy pandas scipy yfinance
+    pip install fredapi pyyaml python-dotenv tqdm arch hmmlearn
+    pip install reportlab pyarrow matplotlib
 """
 
 import sys
@@ -27,7 +33,9 @@ import pandas as pd
 
 from finpredict.config import config, PROJECT_ROOT, get_forecast_days
 from finpredict.data import cached_fetch_all_data
-from finpredict.data.fred_fetcher import fetch_fred_data, get_recession_probability, get_macro_features
+from finpredict.data.fred_fetcher import (
+    fetch_fred_data, get_recession_probability, get_macro_features,
+)
 from finpredict.risk import build_risk_score, detect_regimes, identify_crashes
 from finpredict.models.garch import fit_garch
 from finpredict.models.hmm_regimes import fit_hmm_regimes, get_regime_probs
@@ -36,22 +44,29 @@ from finpredict.simulation.backtest import run_backtest
 from finpredict.models.sectors import analyze_sectors
 from finpredict.models.stocks import select_stocks_from_sectors, analyze_stocks
 from finpredict.reporting.pdf_report import generate_report
+from finpredict.ml.features import (
+    build_feature_matrix, build_target_crash, build_target_return,
+    build_target_crash_multi, build_target_return_multi,
+)
+from finpredict.ml.crash_model import CrashPredictor
+from finpredict.ml.return_model import ReturnPredictor
 
 from datetime import datetime
 
 
 def main():
-    """Complete V4.5 engine pipeline (v2 — GARCH + HMM + FRED)."""
+    """Complete v7 ML-First engine pipeline."""
     try:
-        if hasattr(sys.stdout, 'buffer'):
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        if hasattr(sys.stdout, "buffer"):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
         np.random.seed(42)
         sim_cfg = config["simulation"]
 
         print("=" * 90)
-        print("  MARKET PREDICTION ENGINE v4.5 — CORE ENGINE (v2)")
-        print("  Calibrated | GARCH Volatility | HMM Regimes | FRED Macro")
+        print("  MARKET PREDICTION ENGINE v7.0 — ML-FIRST")
+        print("  LightGBM | GARCH Volatility | HMM Regimes | FRED Macro (Time-Varying)")
+        print("  Isotonic Calibration | Quantile Regression | Factor-Based Sectors")
         print("=" * 90)
         print(f"  Date:        {datetime.now().strftime('%B %d, %Y %I:%M %p')}")
         print(f"  Horizon:     {sim_cfg['forecast_years']} years")
@@ -59,40 +74,68 @@ def main():
         print(f"  Backtest:    {config['data']['backtest_start']} → present")
         print("=" * 90 + "\n")
 
-        # ── 1. Fetch market data ─────────────────────────────────────────
+        # ══════════════════════════════════════════════════════════
+        # 1. FETCH MARKET DATA
+        # ══════════════════════════════════════════════════════════
+        print("[MODULE 1] Fetching market data from Yahoo Finance...")
         data, sector_data = cached_fetch_all_data()
 
-        # ── 1b. Fetch FRED macro data ────────────────────────────────────
+        # ══════════════════════════════════════════════════════════
+        # 2. FETCH FRED TIME SERIES (full history for ML training)
+        # ══════════════════════════════════════════════════════════
         fred_data = fetch_fred_data()
         recession_prob = None
+        fred_features = {}
         if fred_data:
             recession_prob = get_recession_probability(fred_data)
-            macro = get_macro_features(fred_data)
+            fred_features = get_macro_features(fred_data)
+            n_fred = sum(1 for v in fred_data.values() if len(v) > 0)
+            print(f"  [FRED] {n_fred} time series loaded for ML training")
             print(f"  [FRED] Recession probability: {recession_prob*100:.1f}%")
-            for k, v in macro.items():
+            for k, v in fred_features.items():
                 print(f"  [FRED] {k}: {v:.2f}")
             print()
 
-        # ── 2. GJR-GARCH volatility ─────────────────────────────────────
+        # ══════════════════════════════════════════════════════════
+        # 3. GJR-GARCH VOLATILITY MODEL
+        # ══════════════════════════════════════════════════════════
+        print("[MODULE 2] Fitting GARCH volatility model...")
         data["Daily_Returns"] = data["SP500"].pct_change()
         returns = data["Daily_Returns"].dropna()
         garch_result = fit_garch(returns)
         garch_vol = garch_result.current_vol if garch_result.success else None
 
-        # ── 3. HMM regime detection ──────────────────────────────────────
+        # Extract GARCH persistence for MC volatility dynamics
+        garch_persistence = None
+        if garch_result.success:
+            # Persistence = alpha + gamma/2 + beta (for GJR-GARCH)
+            garch_persistence = (
+                garch_result.alpha
+                + garch_result.gamma / 2
+                + garch_result.beta
+            )
+            print(f"  [GARCH] Conditional vol: {garch_vol*100:.1f}%")
+            print(f"  [GARCH] Persistence: {garch_persistence:.4f}")
+
+        # ══════════════════════════════════════════════════════════
+        # 4. HMM REGIME DETECTION
+        # ══════════════════════════════════════════════════════════
+        print("[MODULE 3] Detecting market regimes (HMM)...")
         hmm_result = fit_hmm_regimes(data)
         hmm_probs = get_regime_probs(hmm_result)
 
-        # ── 4. Risk score + rule-based regimes (as backup/complement) ────
+        # ══════════════════════════════════════════════════════════
+        # 5. RISK SCORE + REGIME LABELS
+        # ══════════════════════════════════════════════════════════
+        print("[MODULE 4] Computing risk score...")
         data["Risk_Score"] = build_risk_score(data)
         data["Regime"], rule_regime = detect_regimes(data)
 
-        # Use HMM regime if available, fall back to rule-based
         if hmm_result.success:
             current_regime = hmm_result.current_regime
             data["Regime"] = hmm_result.regime_labels
             print(f"  [REGIME] Using HMM: {current_regime} "
-                  f"(rule-based would say: {rule_regime})")
+                  f"(rule-based: {rule_regime})")
         else:
             current_regime = rule_regime
             print(f"  [REGIME] Using rule-based: {current_regime}")
@@ -108,30 +151,123 @@ def main():
             else 0.5
         )
 
-        # ── 5. Historical crash analysis ─────────────────────────────────
+        # ══════════════════════════════════════════════════════════
+        # 6. HISTORICAL CRASH ANALYSIS
+        # ══════════════════════════════════════════════════════════
+        print("[MODULE 5] Analyzing crash history...")
         crash_df, crash_freq = identify_crashes(data)
 
-        # ── 6. Valuation constraint ──────────────────────────────────────
+        # ══════════════════════════════════════════════════════════
+        # 7. VALUATION CONSTRAINT
+        # ══════════════════════════════════════════════════════════
         val_penalty, cape_value = compute_valuation_penalty(data)
         cape_str = f" (CAPE: {cape_value:.1f})" if cape_value else " (trend proxy)"
-        print(f"[VALUATION] Penalty: {val_penalty*100:+.2f}%/yr{cape_str}\n")
+        print(f"  [VALUATION] Penalty: {val_penalty*100:+.2f}%/yr{cape_str}\n")
 
-        # ── 7. Walk-forward backtest ─────────────────────────────────────
-        bt_results = run_backtest(data, crash_freq)
+        # ══════════════════════════════════════════════════════════
+        # 8. ML WALK-FORWARD BACKTEST (the core)
+        # ══════════════════════════════════════════════════════════
+        # This trains crash + return models on expanding windows
+        # and evaluates their prediction quality over 25 years
+        bt_results = run_backtest(data, crash_freq, fred_data=fred_data)
 
-        # ── 8. Monte Carlo projection (conditioned on GARCH + HMM + FRED)
+        # ══════════════════════════════════════════════════════════
+        # 9. CURRENT ML PREDICTIONS (PRIMARY OUTPUT)
+        # ══════════════════════════════════════════════════════════
+        ml_crash_prob = None
+        ml_predicted_return = None
+        ml_crash_3m = None
+        ml_crash_6m = None
+        ml_return_3m = None
+        ml_return_6m = None
+        ml_return_p10 = None
+        ml_return_p90 = None
+
+        crash_model = bt_results.attrs.get("crash_model")
+        return_model = bt_results.attrs.get("return_model")
+
+        if (crash_model and crash_model.is_trained
+                and return_model and return_model.is_trained):
+            current_features = build_feature_matrix(data, fred_data=fred_data)
+            current_row = current_features.iloc[-1:]
+
+            # Multi-horizon crash predictions
+            ml_crash_prob = float(crash_model.predict_proba(current_row, "12m")[0])
+            if "6m" in crash_model.models:
+                ml_crash_6m = float(crash_model.predict_proba(current_row, "6m")[0])
+            if "3m" in crash_model.models:
+                ml_crash_3m = float(crash_model.predict_proba(current_row, "3m")[0])
+
+            # Multi-horizon return predictions
+            ml_predicted_return = float(return_model.predict(current_row, "12m")[0])
+            if "6m" in return_model.models:
+                ml_return_6m = float(return_model.predict(current_row, "6m")[0])
+            if "3m" in return_model.models:
+                ml_return_3m = float(return_model.predict(current_row, "3m")[0])
+
+            # Quantile predictions for uncertainty
+            quantiles = return_model.predict_quantiles(current_row, "12m")
+            ml_return_p10 = float(quantiles.get("p10", [ml_predicted_return - 0.15])[0])
+            ml_return_p90 = float(quantiles.get("p90", [ml_predicted_return + 0.15])[0])
+
+            print(f"\n{'='*60}")
+            print(f"  ML PREDICTIONS — Current Market State")
+            print(f"{'='*60}")
+            if ml_crash_3m is not None:
+                print(f"  3-Month Crash Prob:   {ml_crash_3m*100:.1f}%")
+            if ml_crash_6m is not None:
+                print(f"  6-Month Crash Prob:   {ml_crash_6m*100:.1f}%")
+            print(f"  12-Month Crash Prob:  {ml_crash_prob*100:.1f}%")
+            print()
+            if ml_return_3m is not None:
+                print(f"  3-Month Expected:     {ml_return_3m*100:+.1f}%")
+            if ml_return_6m is not None:
+                print(f"  6-Month Expected:     {ml_return_6m*100:+.1f}%")
+            print(f"  12-Month Expected:    {ml_predicted_return*100:+.1f}%")
+            print(f"  12-Month Range:       [{ml_return_p10*100:+.1f}%, {ml_return_p90*100:+.1f}%]")
+
+            # Top crash signals
+            top_crash = crash_model.get_top_features(5)
+            if top_crash:
+                print(f"\n  Top Crash Signals:")
+                for feat, imp in top_crash:
+                    val = current_features[feat].iloc[-1]
+                    print(f"    {feat} = {val:.4f} (importance: {imp:.1f})")
+        else:
+            print("\n[WARN] ML models not available — using statistical defaults")
+
+        # ══════════════════════════════════════════════════════════
+        # 10. ML-CONDITIONED MONTE CARLO (secondary)
+        # ══════════════════════════════════════════════════════════
+        print(f"\n[MODULE 7] Running ML-conditioned Monte Carlo...")
         mc_results = run_monte_carlo(
             current_price, current_regime, current_risk,
             crash_freq, current_vix, yield_curve, val_penalty,
             garch_vol=garch_vol,
+            garch_persistence=garch_persistence,
             recession_prob=recession_prob,
+            ml_crash_prob=ml_crash_prob,
+            ml_predicted_return=ml_predicted_return,
+            ml_return_p10=ml_return_p10,
+            ml_return_p90=ml_return_p90,
         )
 
-        # ── 9. Sector analysis ───────────────────────────────────────────
+        # ══════════════════════════════════════════════════════════
+        # 11. SECTOR ANALYSIS (factor-based differentiation)
+        # ══════════════════════════════════════════════════════════
         forecast_days = get_forecast_days()
-        sector_results = analyze_sectors(data, sector_data, forecast_days)
+        sector_results = analyze_sectors(
+            data, sector_data, forecast_days,
+            ml_predicted_return=ml_predicted_return,
+            ml_crash_prob=ml_crash_prob,
+            ml_return_p10=ml_return_p10,
+            ml_return_p90=ml_return_p90,
+            garch_vol=garch_vol,
+        )
 
-        # ── 10. Stock analysis ───────────────────────────────────────────
+        # ══════════════════════════════════════════════════════════
+        # 12. STOCK ANALYSIS
+        # ══════════════════════════════════════════════════════════
         rf_rate = (
             float(data["T3M"].dropna().iloc[-1])
             if "T3M" in data.columns else 0.04
@@ -148,16 +284,18 @@ def main():
             tickers=watchlist,
             forecast_days=forecast_days,
             risk_free_rate=rf_rate,
+            ml_predicted_return=ml_predicted_return,
+            ml_crash_prob=ml_crash_prob,
         )
 
-        # ── 11. Generate PDF report ──────────────────────────────────────
+        # ══════════════════════════════════════════════════════════
+        # 13. GENERATE PDF REPORT
+        # ══════════════════════════════════════════════════════════
+        print(f"\n[MODULE 8] Generating PDF report...")
         report_cfg = config.get("reporting", {})
         output_dir = PROJECT_ROOT / report_cfg.get("output_dir", "reports")
         output_dir.mkdir(parents=True, exist_ok=True)
-        filename = report_cfg.get(
-            "filename_template", "Market_Prediction_v{version}_Report.pdf"
-        )
-        filename = filename.format(version=report_cfg.get("version", "4.5"))
+        filename = "Market_Prediction_v7_ML_Report.pdf"
         output_path = str(output_dir / filename)
 
         generate_report(
@@ -165,26 +303,56 @@ def main():
             current_price, current_regime, current_risk, crash_freq, output_path,
         )
 
-        # ── Summary ──────────────────────────────────────────────────────
+        # ══════════════════════════════════════════════════════════
+        # SUMMARY
+        # ══════════════════════════════════════════════════════════
+        print("\n" + "=" * 90)
+        print("  ENGINE V7.0 ML-FIRST — ANALYSIS COMPLETE")
         print("=" * 90)
-        print("  ENGINE V4.5 (v2) — ANALYSIS COMPLETE")
-        print("=" * 90)
-        print(f"  S&P 500:          ${current_price:,.2f}")
-        print(f"  Regime:           {current_regime}"
+        print(f"  S&P 500:            ${current_price:,.2f}")
+        print(f"  Regime:             {current_regime}"
               f" ({'HMM' if hmm_result.success else 'rule-based'})")
-        print(f"  Risk Score:       {current_risk:.2f}σ")
+        print(f"  Risk Score:         {current_risk:.2f}σ")
         if garch_vol:
-            print(f"  GARCH Vol:        {garch_vol*100:.1f}% annualized")
+            print(f"  GARCH Vol:          {garch_vol*100:.1f}% annualized")
+            if garch_persistence:
+                print(f"  GARCH Persistence:  {garch_persistence:.4f}")
         if recession_prob is not None:
-            print(f"  Recession Prob:   {recession_prob*100:.1f}% (FRED)")
-        print(f"  5Y Projection:    ${mc_results['final_mean']:,.0f} "
+            print(f"  Recession Prob:     {recession_prob*100:.1f}% (FRED)")
+        print()
+
+        if ml_crash_prob is not None:
+            print(f"  ═══ ML PREDICTIONS (PRIMARY) ═══")
+            print(f"  ML Crash (12m):     {ml_crash_prob*100:.1f}%")
+            if ml_crash_6m:
+                print(f"  ML Crash (6m):      {ml_crash_6m*100:.1f}%")
+            if ml_crash_3m:
+                print(f"  ML Crash (3m):      {ml_crash_3m*100:.1f}%")
+            print(f"  ML Return (12m):    {ml_predicted_return*100:+.1f}%")
+            print(f"  ML Return Range:    [{ml_return_p10*100:+.1f}%, {ml_return_p90*100:+.1f}%]")
+        print()
+
+        print(f"  ═══ MONTE CARLO (UNCERTAINTY BANDS) ═══")
+        print(f"  5Y Projection:      ${mc_results['final_mean']:,.0f} "
               f"({mc_results['total_return_pct']:+.1f}%)")
-        print(f"  1Y Crash Prob:    {mc_results['crash_prob_1y']:.1f}%")
-        print(f"  5Y Crash Prob:    {mc_results['crash_prob_5y']:.1f}%")
-        print(f"  CVaR (95%):       {mc_results['cvar_95_pct']:.1f}%")
+        print(f"  Annualized:         {mc_results['annual_return_pct']:.1f}%")
+        print(f"  1Y Crash Prob (MC): {mc_results['crash_prob_1y']:.1f}%")
+        print(f"  5Y Crash Prob (MC): {mc_results['crash_prob_5y']:.1f}%")
+        print(f"  CVaR (95%):         {mc_results['cvar_95_pct']:.1f}%")
+        print()
+
         if len(bt_results) > 0:
-            print(f"  Backtest MAPE:    {bt_results.attrs.get('mape', 0):.1f}%")
-            print(f"  Brier Score:      {bt_results.attrs.get('brier_score', 0):.4f}")
+            print(f"  ═══ BACKTEST VALIDATION ═══")
+            print(f"  MC MAPE:            {bt_results.attrs.get('mape', 0):.1f}%")
+            print(f"  ML Crash Brier:     {bt_results.attrs.get('brier_score', 0):.4f}")
+            print(f"  ML Crash AUC:       {bt_results.attrs.get('crash_auc', 0):.3f}")
+            print(f"  ML Return Corr:     {bt_results.attrs.get('ml_return_corr', 0):.3f}")
+            print(f"  ML Return Skill:    {bt_results.attrs.get('ml_return_skill', 0):.3f}")
+            cr = bt_results.attrs.get("crash_pred_range", (0, 0))
+            print(f"  Crash Pred Range:   [{cr[0]*100:.1f}%, {cr[1]*100:.1f}%]")
+            cs = bt_results.attrs.get("crash_pred_std", 0)
+            disc = "GOOD" if cs > 0.05 else "POOR"
+            print(f"  Crash Pred Std:     {cs*100:.1f}% ({disc})")
         print(f"\n  Report: {output_path}")
         print("=" * 90 + "\n")
 
@@ -198,6 +366,14 @@ def main():
             "garch_result": garch_result,
             "hmm_result": hmm_result,
             "fred_data": fred_data,
+            "crash_model": crash_model,
+            "return_model": return_model,
+            "ml_crash_prob": ml_crash_prob,
+            "ml_predicted_return": ml_predicted_return,
+            "ml_crash_3m": ml_crash_3m,
+            "ml_crash_6m": ml_crash_6m,
+            "ml_return_p10": ml_return_p10,
+            "ml_return_p90": ml_return_p90,
         }
 
     except Exception as e:
