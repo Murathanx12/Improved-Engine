@@ -65,7 +65,13 @@ def select_stocks_from_sectors(sector_results: dict, n_stocks: int = 20) -> list
     if not sector_results:
         return DEFAULT_WATCHLIST[:n_stocks]
 
-    ranked = sorted(sector_results.items(), key=lambda x: x[1]["expected_return"], reverse=True)
+    # some sector results may not include expected_return (e.g., fallback or failures)
+    # default to 0 in those cases to avoid KeyError
+    ranked = sorted(
+        sector_results.items(),
+        key=lambda x: x[1].get("expected_return", 0),
+        reverse=True,
+    )
     selected = []
 
     for i, (sector_name, _info) in enumerate(ranked):
@@ -185,6 +191,11 @@ def analyze_stocks(
     tickers: list[str] | None = None,
     forecast_days: int = 1260,
     risk_free_rate: float = 0.04,
+    # legacy/optional arguments from ML pipeline; ignored if provided
+    ml_predicted_return: float | None = None,
+    ml_crash_prob: float | None = None,
+    ml_return_p10: float | None = None,
+    ml_return_p90: float | None = None,
 ) -> dict:
     """Module 8b Entry Point: Analyze a portfolio of individual stocks."""
     if tickers is None:

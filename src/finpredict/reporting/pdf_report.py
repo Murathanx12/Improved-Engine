@@ -17,15 +17,40 @@ import pandas as pd
 from datetime import datetime, timedelta
 from io import BytesIO
 
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.units import inch
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, PageBreak,
-    Image, Table, TableStyle, KeepTogether,
-)
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+# reportlab is an optional dependency used only for PDF generation.
+# Provide a fallback so the engine can run without it.
+try:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, PageBreak,
+        Image, Table, TableStyle, KeepTogether,
+    )
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    _REPORTLAB_AVAILABLE = True
+except ImportError:
+    _REPORTLAB_AVAILABLE = False
+    # Define no-op stand-ins so references later do not crash
+    letter = None
+    inch = 1
+    SimpleDocTemplate = object
+    Paragraph = lambda *args, **kwargs: None
+    Spacer = lambda *args, **kwargs: None
+    PageBreak = lambda *args, **kwargs: None
+    Image = lambda *args, **kwargs: None
+    Table = lambda *args, **kwargs: None
+    TableStyle = lambda *args, **kwargs: None
+    KeepTogether = lambda *args, **kwargs: None
+    def getSampleStyleSheet():
+        return {}
+    class ParagraphStyle:
+        def __init__(self, *args, **kwargs):
+            pass
+    class colors:
+        HexColor = lambda x: None
+    TA_CENTER = TA_LEFT = TA_JUSTIFY = None
 
 from finpredict.config import config
 from finpredict.utils.charts import (
@@ -40,6 +65,9 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     """
     MODULE 10 ENTRY POINT: Generate comprehensive PDF report.
     """
+    if not _REPORTLAB_AVAILABLE:
+        print("[MODULE 10] reportlab not installed; skipping PDF generation")
+        return None
     print("[MODULE 10] Generating PDF report...")
 
     doc = SimpleDocTemplate(output_path, pagesize=letter,

@@ -11,12 +11,44 @@ Usage:
 
 import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 from io import BytesIO
 import warnings
+
+# matplotlib is optional for headless environments; provide stubs if absent
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    _MPL_AVAILABLE = True
+except ImportError:
+    _MPL_AVAILABLE = False
+    # create lightweight stubs that mimic minimal necessary interface
+    class _DummyFig:
+        def savefig(self, *args, **kwargs):
+            pass
+        def tight_layout(self, *args, **kwargs):
+            pass
+    class _DummyAx:
+        def __getattr__(self, name):
+            def _dummy(*args, **kwargs):
+                return None
+            return _dummy
+    class _DummyPlt:
+        class style:
+            @staticmethod
+            def use(arg):
+                pass
+        def subplots(self, *args, **kwargs):
+            return _DummyFig(), _DummyAx()
+        def close(self, fig=None):
+            pass
+    class _DummyDates:
+        class DateFormatter:
+            def __init__(self, fmt):
+                pass
+    plt = _DummyPlt()
+    mdates = _DummyDates()
 
 from finpredict.config import config
 
