@@ -61,6 +61,9 @@ def simulate_paths(
     ml_return_p90: Optional[float] = None,       # ML 90th percentile return
     garch_vol: Optional[float] = None,           # GARCH conditional volatility
     garch_persistence: Optional[float] = None,   # GARCH alpha+beta (vol persistence)
+    # ── HMM REGIME INPUTS ────────────────────────────────────────
+    hmm_state_means: Optional[np.ndarray] = None,   # [bull_mu, bear_mu, crisis_mu]
+    hmm_regime_probs: Optional[np.ndarray] = None,   # [p_bull, p_bear, p_crisis]
     # ── LEGACY (for backward compat) ──────────────────────────────
     start_regime: str = "Bull",  # Ignored in v7, kept for API compat
     **kwargs,
@@ -88,6 +91,15 @@ def simulate_paths(
     else:
         # Fallback: blend historical returns with institutional consensus
         annual_drift = historical_mu
+
+    # ── HMM regime tilt (small blend with HMM regime-expected return) ──
+    # HMM provides regime-specific μ values. We blend these as a small tilt
+    # to the ML drift so that the HMM affects both σ AND μ (not just σ).
+    # ML prediction remains primary (85%), HMM provides regime context (15%).
+    if hmm_state_means is not None and hmm_regime_probs is not None:
+        hmm_expected = float(np.dot(hmm_regime_probs, hmm_state_means))
+        hmm_tilt = 0.15 * (hmm_expected - annual_drift)
+        annual_drift += hmm_tilt
 
     # Apply scenario adjustment (drift_adj is additive)
     annual_drift += scenario.get("drift_adj", 0.0)
@@ -194,9 +206,15 @@ def simulate_paths(
 
     # Pre-generate random numbers for efficiency
     Z_price = rng.standard_t(df=t_df, size=(days, n_sims))
-    Z_vol = rng.standard_normal(size=(days, n_sims))
+    Z_vol_raw = rng.standard_normal(size=(days, n_sims))
     Z_jump = rng.uniform(size=(days, n_sims))
     Z_jump_size = rng.normal(jump_mean, jump_std, size=(days, n_sims))
+
+    # ── Leverage effect: correlate vol innovations with price shocks ──
+    # In real markets, negative returns increase volatility (Black's leverage effect)
+    # Empirical ρ ≈ -0.7 for equity indices
+    rho_leverage = -0.7
+    Z_vol = rho_leverage * Z_price + np.sqrt(1 - rho_leverage**2) * Z_vol_raw
 
     for t in range(days):
         # ── Update fair value trajectory ──────────────────────────
@@ -260,6 +278,8 @@ def run_monte_carlo(
     ml_predicted_return: Optional[float] = None,
     ml_return_p10: Optional[float] = None,
     ml_return_p90: Optional[float] = None,
+    hmm_state_means: Optional[np.ndarray] = None,
+    hmm_regime_probs: Optional[np.ndarray] = None,
 ) -> dict:
     """
     Run full Monte Carlo simulation with scenario weighting.
@@ -328,6 +348,8 @@ def run_monte_carlo(
             ml_return_p90=ml_return_p90,
             garch_vol=garch_vol,
             garch_persistence=garch_persistence,
+            hmm_state_means=hmm_state_means,
+            hmm_regime_probs=hmm_regime_probs,
         )
 
         scenario_results[name] = {
@@ -368,6 +390,9 @@ def run_monte_carlo(
     total_return = float(final.mean()) / current_price - 1
     annual_return = (1 + total_return) ** (1 / sim_cfg["forecast_years"]) - 1
 
+    # ── Realism validation ──────────────────────────────────────
+    realism = _validate_realism(all_paths, current_price, sim_cfg["forecast_years"])
+
     return {
         "paths": all_paths,
         "final_mean": float(final.mean()),
@@ -389,6 +414,7 @@ def run_monte_carlo(
         "ml_crash_prob": ml_crash_prob,
         "ml_predicted_return": ml_predicted_return,
         "garch_vol": garch_vol,
+        "realism_check": realism,
     }
 
 
@@ -451,4 +477,79 @@ def _adjust_scenario_weights(
     if total > 0:
         weights = {k: v / total for k, v in weights.items()}
 
+    # ── Enforce minimum weight floor ────────────────────────────
+    # Every scenario gets at least 2% weight to prevent zero-sim scenarios
+    for k in weights:
+        weights[k] = max(weights[k], 0.02)
+    total = sum(weights.values())
+    weights = {k: v / total for k, v in weights.items()}
+
     return weights
+
+
+def _validate_realism(
+    paths: np.ndarray,
+    start_price: float,
+    years: float,
+) -> dict:
+    """
+    Validate simulation realism against empirical S&P 500 statistics.
+
+    Checks:
+        - Mean annual return: should be 4-15% (S&P 500 long-run ~10%)
+        - Annual volatility: should be 10-30% (S&P 500 ~16%)
+        - Crash frequency: 30-90% of 5Y paths should have >20% drawdown
+        - Fat tails: return kurtosis should be >3
+
+    Prints warnings for out-of-range metrics. Returns dict with results.
+    """
+    final = paths[-1]
+    n_sims = paths.shape[1]
+    trading_days = paths.shape[0] - 1
+
+    # Annual return
+    total_returns = final / start_price - 1
+    mean_total = float(total_returns.mean())
+    mean_annual = (1 + mean_total) ** (1 / max(years, 0.5)) - 1
+
+    # Annualized vol from daily log returns
+    daily_log_rets = np.diff(np.log(paths), axis=0)
+    mean_daily_vol = float(daily_log_rets.std(axis=0).mean())
+    annual_vol = mean_daily_vol * np.sqrt(252)
+
+    # Crash frequency (>20% peak-to-trough drawdown)
+    sim_peak = np.maximum.accumulate(paths, axis=0)
+    sim_dd = (paths - sim_peak) / np.where(sim_peak > 0, sim_peak, 1.0)
+    crash_pct = float((sim_dd.min(axis=0) <= -0.20).mean())
+
+    # Fat tails (kurtosis of daily returns)
+    # Sample a subset of paths for efficiency
+    sample_rets = daily_log_rets[:, :min(1000, n_sims)].flatten()
+    kurt = float(pd.Series(sample_rets).kurtosis())
+    skew = float(pd.Series(sample_rets).skew())
+
+    warnings = []
+    if mean_annual < 0.04 or mean_annual > 0.15:
+        warnings.append(f"Annual return {mean_annual*100:.1f}% outside 4-15% range")
+    if annual_vol < 0.10 or annual_vol > 0.30:
+        warnings.append(f"Annual vol {annual_vol*100:.1f}% outside 10-30% range")
+    if crash_pct < 0.30 or crash_pct > 0.90:
+        warnings.append(f"Crash frequency {crash_pct*100:.0f}% outside 30-90% range")
+    if kurt < 3:
+        warnings.append(f"Kurtosis {kurt:.1f} < 3 (insufficient fat tails)")
+
+    if warnings:
+        print("  [REALISM CHECK]")
+        for w in warnings:
+            print(f"    [WARN] {w}")
+    else:
+        print("  [REALISM CHECK] All metrics within expected ranges")
+
+    return {
+        "mean_annual_return": mean_annual,
+        "annual_vol": annual_vol,
+        "crash_frequency": crash_pct,
+        "kurtosis": kurt,
+        "skewness": skew,
+        "warnings": warnings,
+    }
