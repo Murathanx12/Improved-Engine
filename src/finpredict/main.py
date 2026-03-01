@@ -240,6 +240,10 @@ def main():
         # 10. ML-CONDITIONED MONTE CARLO (secondary)
         # ══════════════════════════════════════════════════════════
         print(f"\n[MODULE 7] Running ML-conditioned Monte Carlo...")
+        # Extract HMM regime data for MC drift tilt
+        hmm_means = hmm_result.state_means if hmm_result.success else None
+        hmm_probs_arr = hmm_result.regime_probs if hmm_result.success else None
+
         mc_results = run_monte_carlo(
             current_price, current_regime, current_risk,
             crash_freq, current_vix, yield_curve, val_penalty,
@@ -250,6 +254,8 @@ def main():
             ml_predicted_return=ml_predicted_return,
             ml_return_p10=ml_return_p10,
             ml_return_p90=ml_return_p90,
+            hmm_state_means=hmm_means,
+            hmm_regime_probs=hmm_probs_arr,
         )
 
         # ══════════════════════════════════════════════════════════

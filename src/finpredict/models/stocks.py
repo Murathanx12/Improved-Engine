@@ -69,7 +69,7 @@ def select_stocks_from_sectors(sector_results: dict, n_stocks: int = 20) -> list
     # default to 0 in those cases to avoid KeyError
     ranked = sorted(
         sector_results.items(),
-        key=lambda x: x[1].get("expected_return", 0),
+        key=lambda x: x[1].get("expected_total", x[1].get("expected_return", 0)),
         reverse=True,
     )
     selected = []
@@ -151,9 +151,10 @@ def analyze_stock(
         final_sigma = np.clip(hist_sigma, 0.15, 0.80)
 
         # Monte Carlo
+        base_scenario = {"drift_adj": 0, "vol_mult": 1.0, "crash_mult": 1.0}
         paths = simulate_paths(
             current_price, final_mu, final_sigma,
-            forecast_days, 3000, crash_rate=0.07, risk_level=0.0,
+            forecast_days, 3000, 0.07, 0.0, base_scenario,
         )
 
         final_prices = np.minimum(paths[-1], current_price * (1 + max_5y_return))
