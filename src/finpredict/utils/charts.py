@@ -515,7 +515,7 @@ def chart_ml_crash_timeline(bt_results, **style):
     ax.set_title('ML Crash Probability vs Actual Crashes (shaded red)',
                 color=CHART_COLORS['primary'], fontsize=11, fontweight='bold')
     ax.tick_params(colors=CHART_COLORS['text'])
-    ax.legend(facecolor=CHART_COLORS['bg'], edgecolor=CHART_COLORS['grid'],
+    ax.legend(facecolor=CHART_COLORS['bg'], edgecolor=CHART_COLORS['neutral'],
              labelcolor=CHART_COLORS['text'])
     ax.grid(alpha=0.1)
 
@@ -600,7 +600,7 @@ def chart_calibration_diagram(bt_results, **style):
     ax.set_title('Crash Model Calibration (Reliability Diagram)',
                 color=CHART_COLORS['primary'], fontsize=11, fontweight='bold')
     ax.tick_params(colors=CHART_COLORS['text'])
-    ax.legend(facecolor=CHART_COLORS['bg'], edgecolor=CHART_COLORS['grid'],
+    ax.legend(facecolor=CHART_COLORS['bg'], edgecolor=CHART_COLORS['neutral'],
              labelcolor=CHART_COLORS['text'])
     ax.set_xlim(0, 100)
     ax.grid(alpha=0.1)

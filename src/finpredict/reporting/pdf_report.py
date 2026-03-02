@@ -56,7 +56,8 @@ from finpredict.config import config
 from finpredict.utils.charts import (
     fig_to_image, chart_backtest, chart_projection, chart_crash_probability,
     chart_risk_score, chart_scenarios, chart_sectors, chart_stocks,
-    chart_combined_projection_crash, CHART_COLORS,
+    chart_combined_projection_crash, chart_ml_crash_timeline,
+    chart_return_scatter, chart_calibration_diagram, CHART_COLORS,
 )
 
 
@@ -107,8 +108,8 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
         return t
 
     # ===== PAGE 1: EXECUTIVE SUMMARY =====
-    story.append(Paragraph("MARKET PREDICTION ENGINE v4.5", title_style))
-    story.append(Paragraph("Core Engine — Crash Probability & 5-Year Projection", styles['Heading3']))
+    story.append(Paragraph("MARKET PREDICTION ENGINE v7.0", title_style))
+    story.append(Paragraph("Core Engine — Crash Probability &amp; 5-Year Projection", styles['Heading3']))
     story.append(Spacer(1, 0.15*inch))
 
     exec_text = f"""
@@ -172,6 +173,49 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
         story.append(Paragraph(bt_text, body_style))
     story.append(Spacer(1, 0.15*inch))
     story.append(fig_to_image(chart_backtest(data, bt_results)))
+    story.append(PageBreak())
+
+    # ===== PAGE 2b: ML DIAGNOSTIC CHARTS =====
+    story.append(Paragraph("ML MODEL DIAGNOSTICS", heading_style))
+
+    diag_text = """
+    These diagnostic charts validate the ML model's crash predictions and return
+    estimates across the full walk-forward backtest period. They reveal whether the
+    model discriminates between calm and crisis periods, how well predicted returns
+    track actual outcomes, and whether crash probabilities are properly calibrated.
+    """
+    story.append(Paragraph(diag_text, body_style))
+    story.append(Spacer(1, 0.1*inch))
+
+    # Crash timeline
+    crash_tl = chart_ml_crash_timeline(bt_results)
+    if crash_tl is not None:
+        story.append(Paragraph("<b>Crash Probability Timeline</b> — Does the model's "
+                               "crash probability rise before actual crashes (red shading)?",
+                               small_style))
+        story.append(Spacer(1, 0.05*inch))
+        story.append(fig_to_image(crash_tl, height=2.8*inch))
+        story.append(Spacer(1, 0.15*inch))
+
+    # Return scatter
+    ret_scat = chart_return_scatter(bt_results)
+    if ret_scat is not None:
+        story.append(Paragraph("<b>Predicted vs Actual Returns</b> — Points near the "
+                               "diagonal indicate accurate predictions.",
+                               small_style))
+        story.append(Spacer(1, 0.05*inch))
+        story.append(fig_to_image(ret_scat, height=2.8*inch))
+        story.append(Spacer(1, 0.15*inch))
+
+    # Calibration diagram
+    cal_diag = chart_calibration_diagram(bt_results)
+    if cal_diag is not None:
+        story.append(Paragraph("<b>Crash Calibration (Reliability Diagram)</b> — Bars on "
+                               "the diagonal mean the model is well-calibrated.",
+                               small_style))
+        story.append(Spacer(1, 0.05*inch))
+        story.append(fig_to_image(cal_diag, height=2.8*inch))
+
     story.append(PageBreak())
 
     # ===== PAGE 3: 5-YEAR PROJECTION =====
@@ -305,7 +349,7 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
             f"{variance:+.1f}%"
         ])
     inst_rows.append([
-        'V4.5 Model',
+        'V7.0 Model',
         f"{model_annual:.1f}%",
         '5Y',
         f"${mc_results['final_mean']:,.0f}",
