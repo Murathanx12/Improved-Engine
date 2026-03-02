@@ -477,4 +477,133 @@ def chart_combined_projection_crash(mc_results, current_price):
     return fig
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# DIAGNOSTIC WALK-FORWARD PLOTS
+# ═══════════════════════════════════════════════════════════════════════
 
+def chart_ml_crash_timeline(bt_results, **style):
+    """ML crash probability over time with actual crash periods shaded red.
+
+    This is the most important validation chart: does the model's crash
+    probability actually rise before crashes and fall during calm periods?
+    """
+    if bt_results is None or len(bt_results) == 0:
+        return None
+
+    report_cfg = config.get("reporting", {})
+    fig_w = style.get("figure_width", report_cfg.get("figure_width", 7))
+    fig_h = style.get("figure_height", report_cfg.get("figure_height", 3.5))
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=CHART_COLORS['bg'])
+    ax.set_facecolor(CHART_COLORS['bg'])
+
+    dates = bt_results["date"]
+    crash_prob = bt_results["ml_crash_12m"] * 100
+    actual_crash = bt_results["actual_crash_12m"].astype(bool)
+
+    # Shade actual crash periods red
+    for i in range(len(dates)):
+        if actual_crash.iloc[i]:
+            ax.axvspan(dates.iloc[i], dates.iloc[min(i+1, len(dates)-1)],
+                      alpha=0.15, color='red', linewidth=0)
+
+    # Plot ML crash probability
+    ax.plot(dates, crash_prob, color=CHART_COLORS['negative'], linewidth=1.5, label='ML Crash Prob')
+    ax.axhline(y=20, color=CHART_COLORS['text'], linestyle='--', alpha=0.3, linewidth=0.8)
+
+    ax.set_ylabel('Crash Probability (%)', color=CHART_COLORS['text'])
+    ax.set_title('ML Crash Probability vs Actual Crashes (shaded red)',
+                color=CHART_COLORS['primary'], fontsize=11, fontweight='bold')
+    ax.tick_params(colors=CHART_COLORS['text'])
+    ax.legend(facecolor=CHART_COLORS['bg'], edgecolor=CHART_COLORS['grid'],
+             labelcolor=CHART_COLORS['text'])
+    ax.grid(alpha=0.1)
+
+    fig.tight_layout()
+    return fig
+
+
+def chart_return_scatter(bt_results, **style):
+    """Predicted vs actual 12-month return scatter plot with 45-degree line.
+
+    Points near the diagonal = accurate predictions. Systematic bias shows
+    as the cloud drifting above or below the line.
+    """
+    if bt_results is None or len(bt_results) == 0:
+        return None
+
+    report_cfg = config.get("reporting", {})
+    fig_w = style.get("figure_width", report_cfg.get("figure_width", 7))
+    fig_h = style.get("figure_height", report_cfg.get("figure_height", 3.5))
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=CHART_COLORS['bg'])
+    ax.set_facecolor(CHART_COLORS['bg'])
+
+    actual = bt_results["actual_return_12m"] * 100
+    predicted = bt_results["ml_return_12m"] * 100
+
+    ax.scatter(actual, predicted, alpha=0.5, s=20, color=CHART_COLORS['accent'], edgecolors='none')
+
+    # 45-degree line (perfect prediction)
+    lims = [min(actual.min(), predicted.min()) - 5, max(actual.max(), predicted.max()) + 5]
+    ax.plot(lims, lims, '--', color=CHART_COLORS['text'], alpha=0.4, linewidth=1)
+
+    ax.set_xlabel('Actual 12m Return (%)', color=CHART_COLORS['text'])
+    ax.set_ylabel('Predicted 12m Return (%)', color=CHART_COLORS['text'])
+    ax.set_title('ML Return Predictions vs Actual',
+                color=CHART_COLORS['primary'], fontsize=11, fontweight='bold')
+    ax.tick_params(colors=CHART_COLORS['text'])
+    ax.grid(alpha=0.1)
+
+    fig.tight_layout()
+    return fig
+
+
+def chart_calibration_diagram(bt_results, **style):
+    """Reliability diagram: predicted crash probability bins vs observed frequency.
+
+    A well-calibrated model has points on the diagonal. Points above = under-confident
+    (actual rate higher than predicted). Points below = over-confident.
+    """
+    if bt_results is None or len(bt_results) == 0:
+        return None
+
+    report_cfg = config.get("reporting", {})
+    fig_w = style.get("figure_width", report_cfg.get("figure_width", 7))
+    fig_h = style.get("figure_height", report_cfg.get("figure_height", 3.5))
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=CHART_COLORS['bg'])
+    ax.set_facecolor(CHART_COLORS['bg'])
+
+    predicted = bt_results["ml_crash_12m"]
+    actual = bt_results["actual_crash_12m"].astype(float)
+
+    # Bin predictions into groups
+    bins = [0, 0.10, 0.20, 0.30, 0.50, 1.0]
+    bin_centers = []
+    observed_rates = []
+
+    for i in range(len(bins) - 1):
+        mask = (predicted >= bins[i]) & (predicted < bins[i+1])
+        if mask.sum() > 0:
+            bin_centers.append((bins[i] + bins[i+1]) / 2 * 100)
+            observed_rates.append(actual[mask].mean() * 100)
+
+    if bin_centers:
+        ax.bar(bin_centers, observed_rates, width=8, alpha=0.7,
+              color=CHART_COLORS['secondary'], edgecolor=CHART_COLORS['text'], linewidth=0.5)
+        ax.plot([0, 100], [0, 100], '--', color=CHART_COLORS['text'], alpha=0.4,
+               linewidth=1, label='Perfect calibration')
+
+    ax.set_xlabel('Predicted Crash Probability (%)', color=CHART_COLORS['text'])
+    ax.set_ylabel('Observed Crash Frequency (%)', color=CHART_COLORS['text'])
+    ax.set_title('Crash Model Calibration (Reliability Diagram)',
+                color=CHART_COLORS['primary'], fontsize=11, fontweight='bold')
+    ax.tick_params(colors=CHART_COLORS['text'])
+    ax.legend(facecolor=CHART_COLORS['bg'], edgecolor=CHART_COLORS['grid'],
+             labelcolor=CHART_COLORS['text'])
+    ax.set_xlim(0, 100)
+    ax.grid(alpha=0.1)
+
+    fig.tight_layout()
+    return fig

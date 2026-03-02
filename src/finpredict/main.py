@@ -50,6 +50,8 @@ from finpredict.ml.features import (
 )
 from finpredict.ml.crash_model import CrashPredictor
 from finpredict.ml.return_model import ReturnPredictor
+from finpredict.intelligence import fetch_gdelt_data, compute_event_score
+from finpredict.intelligence.event_scorer import adjust_crash_probability
 
 from datetime import datetime
 
@@ -226,15 +228,50 @@ def main():
             print(f"  12-Month Expected:    {ml_predicted_return*100:+.1f}%")
             print(f"  12-Month Range:       [{ml_return_p10*100:+.1f}%, {ml_return_p90*100:+.1f}%]")
 
-            # Top crash signals
+            # Top crash signals (gain-based importance)
             top_crash = crash_model.get_top_features(5)
             if top_crash:
                 print(f"\n  Top Crash Signals:")
                 for feat, imp in top_crash:
                     val = current_features[feat].iloc[-1]
                     print(f"    {feat} = {val:.4f} (importance: {imp:.1f})")
+
+            # SHAP explanations (why the model is predicting this crash probability)
+            shap_contributions = crash_model.get_shap_values(current_row, "12m")
+            if shap_contributions:
+                print(f"\n  SHAP Crash Drivers (current prediction):")
+                for feat, sv in shap_contributions[:7]:
+                    direction = "UP" if sv > 0 else "DOWN"
+                    val = current_features[feat].iloc[-1]
+                    print(f"    {feat} = {val:.4f} → pushes crash prob {direction} ({sv:+.4f})")
         else:
             print("\n[WARN] ML models not available — using statistical defaults")
+
+        # ══════════════════════════════════════════════════════════
+        # 9b. OSINT INTELLIGENCE LAYER (event-driven risk)
+        # ══════════════════════════════════════════════════════════
+        event_score_result = None
+        try:
+            print(f"\n[MODULE 6b] Fetching OSINT intelligence (GDELT)...")
+            gdelt_data = fetch_gdelt_data()
+            if gdelt_data.get("success"):
+                event_score_result = compute_event_score(gdelt_data, fred_features)
+                es = event_score_result["event_score"]
+                print(f"  [OSINT] Event Score: {es:.2f}")
+                print(f"  [OSINT] {event_score_result['interpretation']}")
+                for comp, val in event_score_result["components"].items():
+                    print(f"    {comp}: {val:.2f}")
+
+                # Adjust ML crash probability with event-driven intelligence
+                if ml_crash_prob is not None:
+                    original_prob = ml_crash_prob
+                    ml_crash_prob = adjust_crash_probability(ml_crash_prob, event_score_result)
+                    if abs(ml_crash_prob - original_prob) > 0.01:
+                        print(f"  [OSINT] Crash prob adjusted: {original_prob*100:.1f}% → {ml_crash_prob*100:.1f}%")
+            else:
+                print(f"  [OSINT] GDELT unavailable — using ML predictions only")
+        except Exception as e:
+            print(f"  [OSINT] Intelligence layer error: {e} — continuing without")
 
         # ══════════════════════════════════════════════════════════
         # 10. ML-CONDITIONED MONTE CARLO (secondary)
@@ -243,6 +280,7 @@ def main():
         # Extract HMM regime data for MC drift tilt
         hmm_means = hmm_result.state_means if hmm_result.success else None
         hmm_probs_arr = hmm_result.regime_probs if hmm_result.success else None
+        hmm_vols = hmm_result.state_vols if hmm_result.success else None
 
         mc_results = run_monte_carlo(
             current_price, current_regime, current_risk,
@@ -256,6 +294,7 @@ def main():
             ml_return_p90=ml_return_p90,
             hmm_state_means=hmm_means,
             hmm_regime_probs=hmm_probs_arr,
+            hmm_state_vols=hmm_vols,
         )
 
         # ══════════════════════════════════════════════════════════

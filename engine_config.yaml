@@ -24,6 +24,8 @@ data:
     gold: "GC=F"                      # Gold Futures
     nasdaq: "^IXIC"                   # NASDAQ Composite
     russell: "^RUT"                   # Russell 2000 Small Cap
+    vix3m: "^VIX3M"                   # 90-day VIX (for term structure slope)
+    skew: "^SKEW"                     # CBOE Tail Risk / SKEW Index
 
   # Sector ETFs (name → ticker)
   sectors:
@@ -49,6 +51,11 @@ data:
     fed_funds: FEDFUNDS               # Federal Funds Rate
     consumer_sentiment: UMCSENT       # U of Michigan Consumer Sentiment
     vix_fred: VIXCLS                  # VIX (FRED version, for longer history)
+    ted_spread: TEDRATE               # Banking system stress (3M LIBOR - 3M T-Bill)
+    hy_oas: BAMLH0A0HYM2             # High Yield OAS spread (direct credit stress)
+    ig_oas: BAMLC0A0CM               # Investment Grade OAS spread
+    gpr_world: GPRH                   # Geopolitical Risk Index (threats)
+    consumer_credit: TOTALSL          # Total consumer credit outstanding
 
 
 # ── SIMULATION SETTINGS ─────────────────────────────────────────────────────────────
@@ -66,6 +73,14 @@ simulation:
     mean: -0.10                       # Average jump size (-10%)
     std: 0.05                         # Jump size volatility
     t_degrees_of_freedom: 8           # Student-t df (higher = lighter tails)
+
+  # HMM regime blending (how much HMM affects drift/vol vs ML/GARCH)
+  hmm_drift_blend: 0.15              # 0-1: fraction of drift from HMM regime
+  hmm_vol_blend: 0.15                # 0-1: fraction of vol from HMM regime
+
+  # Block bootstrap (preserves volatility clustering in simulation)
+  use_block_bootstrap: false          # Enable block bootstrap for MC noise
+  block_bootstrap_size: 21            # Block size in trading days (~1 month)
 
   # Return constraints
   max_5y_return: 3.0                  # 300% cap (prevents runaway simulations)

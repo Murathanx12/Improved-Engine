@@ -75,6 +75,7 @@ if _HAS_LIGHTGBM:
             targets: dict | pd.Series,
             train_end_idx: Optional[int] = None,
             min_train_samples: int = 1260,
+            severity_targets: dict = None,
         ) -> dict:
             """
             Train crash predictors on one or more horizons.
@@ -88,6 +89,8 @@ if _HAS_LIGHTGBM:
                 targets: Dict of {horizon: binary_series} or single Series
                 train_end_idx: Temporal cutoff index
                 min_train_samples: Minimum observations needed to train
+                severity_targets: Optional dict of {threshold_label: binary_series}
+                    for multi-threshold ensemble (e.g., 10%, 15%, 20% drawdowns)
             """
             if isinstance(targets, pd.Series):
                 targets = {"12m": targets}
@@ -132,11 +135,47 @@ if _HAS_LIGHTGBM:
             if not self.models:
                 return {"success": False, "reason": "No horizon trained successfully"}
 
+            # ── Train severity ensemble (10%, 15%, 20% drawdown thresholds) ──
+            if severity_targets:
+                self._train_severity_ensemble(X, severity_targets, train_end_idx, min_train_samples)
+
             self.feature_importances_ = dict(zip(self.feature_names, combined_importances))
             self.is_trained = True
 
             primary_result = results.get("12m", list(results.values())[0])
             return primary_result
+
+        def _train_severity_ensemble(
+            self,
+            X: pd.DataFrame,
+            severity_targets: dict,
+            train_end_idx: Optional[int],
+            min_train_samples: int,
+        ):
+            """Train models at multiple drawdown severity levels for ensemble.
+
+            More lenient thresholds (10%, 15%) provide more training examples,
+            capturing early-warning patterns that the strict 20% model misses.
+            The ensemble blends predictions: 0.15 * p_10 + 0.25 * p_15 + 0.60 * p_20
+            """
+            for label, target in severity_targets.items():
+                y = target.iloc[:train_end_idx] if train_end_idx else target.copy()
+                valid = y.notna() & X.iloc[:len(y)].notna().any(axis=1)
+                X_sev = X.iloc[:len(y)][valid]
+                y_sev = y[valid].astype(int)
+
+                if len(X_sev) < min_train_samples or y_sev.nunique() < 2:
+                    continue
+
+                try:
+                    r = self._train_single(X_sev, y_sev, label)
+                    if r["success"]:
+                        # Move from primary models dict to severity dict
+                        self.severity_models[label] = self.models.pop(label)
+                        if label in self.calibrators:
+                            self.severity_calibrators[label] = self.calibrators.pop(label)
+                except Exception:
+                    continue
 
         def _train_single(self, X: pd.DataFrame, y: pd.Series, horizon: str) -> dict:
             """
@@ -185,6 +224,18 @@ if _HAS_LIGHTGBM:
                 train_w = sample_weights[:split_idx]
                 val_X = X.iloc[split_idx:]
                 val_y = y.iloc[split_idx:]
+
+            # ── Ensure both classes present in train AND val ─────────
+            # LightGBM's LabelEncoder will crash if val_y contains a label
+            # not seen in train_y (e.g., train has only 0, val has 0 and 1).
+            if train_y.nunique() < 2:
+                return {"success": False, "reason": f"Training set has only class {train_y.unique()[0]}"}
+            if val_y.nunique() < 2:
+                # Val set single-class: still train the model but skip early stopping
+                # by using a small portion of training data as eval set instead
+                eval_split = max(50, int(len(train_X) * 0.1))
+                val_X = train_X.iloc[-eval_split:]
+                val_y = train_y.iloc[-eval_split:]
 
             # ── LightGBM training ─────────────────────────────────────
             # Less regularized than v6 — the model NEEDS to find patterns in
@@ -266,15 +317,50 @@ if _HAS_LIGHTGBM:
             """
             Predict calibrated crash probability at given horizon.
 
+            If severity ensemble models are available, blends predictions across
+            multiple drawdown thresholds: 0.15 * p_10 + 0.25 * p_15 + 0.60 * p_20
+            This gives more robust predictions by leveraging more training data.
+
             Pipeline: features → LightGBM raw score → isotonic calibration → clipped probability
             """
             if not self.is_trained:
                 raise RuntimeError("Model not trained — call train() first")
 
+            X = features[self.feature_names] if isinstance(features, pd.DataFrame) else features
+
+            # ── Severity ensemble (if trained) ──────────────────────────
+            severity_weights = {
+                "thresh_10pct": 0.15,
+                "thresh_15pct": 0.25,
+                "thresh_20pct": 0.60,
+            }
+            available = {k: w for k, w in severity_weights.items() if k in self.severity_models}
+            if available:
+                # Normalize weights to sum to the available portion
+                total_w = sum(available.values())
+                ensemble_prob = np.zeros(len(X))
+                for label, weight in available.items():
+                    raw = self.severity_models[label].predict_proba(X)[:, 1]
+                    if label in self.severity_calibrators:
+                        raw = self.severity_calibrators[label].predict(raw)
+                    ensemble_prob += (weight / total_w) * raw
+
+                # Also blend with the primary horizon model if available
+                if horizon in self.models:
+                    primary_raw = self.models[horizon].predict_proba(X)[:, 1]
+                    if horizon in self.calibrators:
+                        primary_raw = self.calibrators[horizon].predict(primary_raw)
+                    # 70% primary model, 30% severity ensemble
+                    calibrated = 0.70 * primary_raw + 0.30 * ensemble_prob
+                else:
+                    calibrated = ensemble_prob
+
+                return np.clip(calibrated, 0.02, 0.98)
+
+            # ── Standard single-threshold prediction ────────────────────
             if horizon not in self.models:
                 horizon = list(self.models.keys())[0]
 
-            X = features[self.feature_names] if isinstance(features, pd.DataFrame) else features
             raw = self.models[horizon].predict_proba(X)[:, 1]
 
             if horizon in self.calibrators:
@@ -310,6 +396,38 @@ if _HAS_LIGHTGBM:
                 self.feature_importances_.items(),
                 key=lambda x: x[1], reverse=True
             )[:n]
+
+        def get_shap_values(self, features: pd.DataFrame, horizon: str = "12m") -> list:
+            """Compute SHAP values to explain why the model predicts high/low crash probability.
+
+            Returns list of (feature_name, shap_value) tuples sorted by absolute SHAP value.
+            Positive SHAP = feature pushes crash probability UP.
+            Negative SHAP = feature pushes crash probability DOWN.
+            """
+            try:
+                import shap
+            except ImportError:
+                return []
+
+            if horizon not in self.models:
+                if not self.models:
+                    return []
+                horizon = list(self.models.keys())[0]
+
+            X = features[self.feature_names] if isinstance(features, pd.DataFrame) else features
+            explainer = shap.TreeExplainer(self.models[horizon])
+            shap_values = explainer.shap_values(X)
+
+            # For binary classification, shap_values may be a list [class_0, class_1]
+            if isinstance(shap_values, list):
+                sv = shap_values[1]  # Class 1 (crash) SHAP values
+            else:
+                sv = shap_values
+
+            # Return feature contributions for the last row (current prediction)
+            row = sv[-1] if len(sv.shape) > 1 else sv
+            contributions = list(zip(self.feature_names, row))
+            return sorted(contributions, key=lambda x: abs(x[1]), reverse=True)
 
 else:
     # ── Fallback when LightGBM is not installed ─────────────────────
