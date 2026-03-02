@@ -42,6 +42,64 @@ from finpredict.config import config, get_scenario_configs
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# BLOCK BOOTSTRAP
+# ═══════════════════════════════════════════════════════════════════════
+
+def _generate_block_bootstrap_residuals(
+    historical_returns: np.ndarray,
+    days: int,
+    n_sims: int,
+    block_size: int = 21,
+    rng=None,
+) -> np.ndarray:
+    """Sample overlapping blocks of historical residuals to preserve volatility clustering.
+
+    Real markets exhibit autocorrelated volatility: calm periods follow calm,
+    crisis follows crisis. I.i.d. draws destroy this structure. Block bootstrap
+    samples contiguous blocks of historical returns, preserving within-block
+    serial correlation (volatility clustering, momentum, mean-reversion).
+
+    Args:
+        historical_returns: Array of standardized historical daily returns
+        days: Number of simulation days
+        n_sims: Number of simulation paths
+        block_size: Size of each block (21 ≈ 1 trading month)
+        rng: Numpy random generator
+
+    Returns:
+        np.ndarray of shape (days, n_sims) with block-bootstrapped residuals
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    n_hist = len(historical_returns)
+    max_start = n_hist - block_size
+    if max_start < 1:
+        return rng.standard_normal(size=(days, n_sims))
+
+    # Standardize historical returns to zero mean, unit variance
+    mu = historical_returns.mean()
+    sigma = historical_returns.std()
+    if sigma < 1e-10:
+        return rng.standard_normal(size=(days, n_sims))
+    standardized = (historical_returns - mu) / sigma
+
+    n_blocks_needed = (days + block_size - 1) // block_size
+    residuals = np.zeros((days, n_sims))
+
+    # Vectorized block sampling: sample all block starts at once
+    starts = rng.integers(0, max_start, size=(n_blocks_needed, n_sims))
+    for b in range(n_blocks_needed):
+        row_start = b * block_size
+        row_end = min(row_start + block_size, days)
+        actual_len = row_end - row_start
+        for sim in range(n_sims):
+            residuals[row_start:row_end, sim] = standardized[starts[b, sim]:starts[b, sim] + actual_len]
+
+    return residuals
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # CORE SIMULATION
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -64,6 +122,9 @@ def simulate_paths(
     # ── HMM REGIME INPUTS ────────────────────────────────────────
     hmm_state_means: Optional[np.ndarray] = None,   # [bull_mu, bear_mu, crisis_mu]
     hmm_regime_probs: Optional[np.ndarray] = None,   # [p_bull, p_bear, p_crisis]
+    hmm_state_vols: Optional[np.ndarray] = None,     # [bull_vol, bear_vol, crisis_vol]
+    # ── BLOCK BOOTSTRAP ───────────────────────────────────────────
+    historical_residuals: Optional[np.ndarray] = None,  # For block bootstrap
     # ── LEGACY (for backward compat) ──────────────────────────────
     start_regime: str = "Bull",  # Ignored in v7, kept for API compat
     **kwargs,
@@ -92,13 +153,15 @@ def simulate_paths(
         # Fallback: blend historical returns with institutional consensus
         annual_drift = historical_mu
 
-    # ── HMM regime tilt (small blend with HMM regime-expected return) ──
+    # ── HMM regime tilt (configurable blend with HMM regime-expected return) ──
     # HMM provides regime-specific μ values. We blend these as a small tilt
     # to the ML drift so that the HMM affects both σ AND μ (not just σ).
-    # ML prediction remains primary (85%), HMM provides regime context (15%).
+    # ML prediction remains primary, HMM provides regime context.
+    hmm_drift_blend = sim_cfg.get("hmm_drift_blend", 0.15)
+    hmm_vol_blend = sim_cfg.get("hmm_vol_blend", 0.15)
     if hmm_state_means is not None and hmm_regime_probs is not None:
         hmm_expected = float(np.dot(hmm_regime_probs, hmm_state_means))
-        hmm_tilt = 0.15 * (hmm_expected - annual_drift)
+        hmm_tilt = hmm_drift_blend * (hmm_expected - annual_drift)
         annual_drift += hmm_tilt
 
     # Apply scenario adjustment (drift_adj is additive)
@@ -115,6 +178,12 @@ def simulate_paths(
         base_vol = garch_vol
     else:
         base_vol = historical_sigma
+
+    # ── HMM regime volatility blend ────────────────────────────────
+    # Blend GARCH vol with HMM regime-weighted vol for richer conditioning
+    if hmm_state_vols is not None and hmm_regime_probs is not None:
+        hmm_vol = float(np.dot(hmm_regime_probs, hmm_state_vols))
+        base_vol = (1 - hmm_vol_blend) * base_vol + hmm_vol_blend * hmm_vol
 
     # Apply scenario vol multiplier
     base_vol *= scenario.get("vol_mult", 1.0)
@@ -205,7 +274,15 @@ def simulate_paths(
     fair_value = np.full(n_sims, start_price)
 
     # Pre-generate random numbers for efficiency
-    Z_price = rng.standard_t(df=t_df, size=(days, n_sims))
+    # Use block bootstrap if enabled and historical residuals are available
+    use_block_bootstrap = sim_cfg.get("use_block_bootstrap", False)
+    block_size = sim_cfg.get("block_bootstrap_size", 21)
+    if use_block_bootstrap and historical_residuals is not None and len(historical_residuals) > block_size:
+        Z_price = _generate_block_bootstrap_residuals(
+            historical_residuals, days, n_sims, block_size, rng
+        )
+    else:
+        Z_price = rng.standard_t(df=t_df, size=(days, n_sims))
     Z_vol_raw = rng.standard_normal(size=(days, n_sims))
     Z_jump = rng.uniform(size=(days, n_sims))
     Z_jump_size = rng.normal(jump_mean, jump_std, size=(days, n_sims))
@@ -280,6 +357,7 @@ def run_monte_carlo(
     ml_return_p90: Optional[float] = None,
     hmm_state_means: Optional[np.ndarray] = None,
     hmm_regime_probs: Optional[np.ndarray] = None,
+    hmm_state_vols: Optional[np.ndarray] = None,
 ) -> dict:
     """
     Run full Monte Carlo simulation with scenario weighting.
@@ -320,6 +398,14 @@ def run_monte_carlo(
     historical_mu = np.log(1 + base_annual_return)
     historical_sigma = garch_vol if garch_vol else 0.16
 
+    # ── Institutional consensus as scenario anchor ─────────────────
+    # Scenario drift_adj is computed relative to institutional consensus,
+    # NOT relative to ML return. This ensures ML prediction survives as
+    # the base drift, and scenarios tilt around it rather than replacing it.
+    from finpredict.config import get_institutional_return
+    inst_return = get_institutional_return()
+    inst_mu = np.log(1 + inst_return)
+
     # ── Run scenario-weighted simulation ──────────────────────────
     all_paths = None
     scenario_results = {}
@@ -329,9 +415,10 @@ def run_monte_carlo(
         sims_for_scenario = max(1, int(n_sims * weight))
 
         # Build scenario-specific adjustments
-        # These OFFSET the ML prediction, not replace it
-        ml_return = scfg.get("return", base_annual_return)
-        drift_adj = np.log(1 + ml_return) - historical_mu  # Scenario offset
+        # drift_adj = how much this scenario deviates from institutional consensus
+        # ML return remains as the base drift inside simulate_paths()
+        scenario_return = scfg.get("return", inst_return)
+        drift_adj = np.log(1 + scenario_return) - inst_mu  # Tilt from consensus
 
         scenario_params = {
             "drift_adj": drift_adj,
@@ -350,6 +437,7 @@ def run_monte_carlo(
             garch_persistence=garch_persistence,
             hmm_state_means=hmm_state_means,
             hmm_regime_probs=hmm_regime_probs,
+            hmm_state_vols=hmm_state_vols,
         )
 
         scenario_results[name] = {

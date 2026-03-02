@@ -21,6 +21,8 @@ Usage:
     fred_data = fetch_fred_data()
 """
 
+import math
+
 import pandas as pd
 from typing import Optional
 
@@ -140,9 +142,6 @@ def get_macro_features(fred_data: dict) -> dict:
 
     return features
 
-
-# Actually use proper math.exp
-import math
 
 def _exp_safe(x: float) -> float:
     """Safe exponential that avoids overflow."""

@@ -137,6 +137,19 @@ def fetch_all_data() -> tuple[pd.DataFrame, dict[str, pd.Series]]:
     if russell is not None:
         data["Russell"] = russell
 
+    # ── Options Market Signals ─────────────────────────────────────────────────
+    # VIX term structure: VIX/VIX3M > 1.0 = backwardation = imminent risk priced
+    if "vix3m" in tickers:
+        vix3m = fetch_safe(tickers["vix3m"], "2008-01-03", end, "VIX3M (90-day)")
+        if vix3m is not None:
+            data["VIX3M"] = vix3m
+
+    # SKEW Index: measures tail-risk hedging demand (high SKEW = institutions buying crash protection)
+    if "skew" in tickers:
+        skew = fetch_safe(tickers["skew"], "1990-01-02", end, "CBOE SKEW")
+        if skew is not None:
+            data["SKEW"] = skew
+
     # ── Sector ETFs ──────────────────────────────────────────────────────────────
     sector_tickers = config["data"]["sectors"]
     sector_start = config["data"]["sector_start"]

@@ -40,6 +40,7 @@ from finpredict.simulation.monte_carlo import simulate_paths
 from finpredict.ml.features import (
     build_feature_matrix, build_target_crash, build_target_return,
     build_target_crash_multi, build_target_return_multi,
+    build_target_crash_ensemble,
 )
 from finpredict.ml.crash_model import CrashPredictor
 from finpredict.ml.return_model import ReturnPredictor
@@ -91,6 +92,9 @@ def run_backtest(
     crash_targets = build_target_crash_multi(data, threshold=-risk_cfg["crash_threshold"])
     return_targets = build_target_return_multi(data)
 
+    # Multi-threshold severity targets for crash ensemble (10%, 15%, 20%)
+    severity_targets = build_target_crash_ensemble(data)
+
     # ── Initialize ML models ──────────────────────────────────────
     crash_model = CrashPredictor(n_estimators=800)
     return_model = ReturnPredictor(n_estimators=600)
@@ -114,6 +118,7 @@ def run_backtest(
                 features, crash_targets,
                 train_end_idx=idx,
                 min_train_samples=min_train_samples,
+                severity_targets=severity_targets,
             )
             return_result = return_model.train(
                 features, return_targets,
