@@ -429,6 +429,81 @@ if _HAS_LIGHTGBM:
             contributions = list(zip(self.feature_names, row))
             return sorted(contributions, key=lambda x: abs(x[1]), reverse=True)
 
+        def run_counterfactual(
+            self,
+            base_features: pd.DataFrame,
+            scenarios: list,
+        ) -> dict:
+            """Estimate crash probability under hypothetical market conditions.
+
+            Each scenario overrides one or more feature values in the current
+            feature row and re-runs the model.  Useful for answering questions
+            like "what would crash probability be if VIX hit 40?".
+
+            Args:
+                base_features: DataFrame with one row — the current feature vector
+                                (output of build_feature_matrix(...).iloc[-1:]).
+                scenarios: list of dicts, each with:
+                    "label"    – human-readable scenario name
+                    "overrides" – {feature_name: new_value}
+
+            Returns:
+                {
+                    "base_prob_3m":  float,
+                    "base_prob_12m": float,
+                    "scenarios": [
+                        {
+                            "label": str,
+                            "overrides": dict,
+                            "crash_prob_3m":  float,
+                            "crash_prob_12m": float,
+                            "delta_3m":  float,   # change vs base
+                            "delta_12m": float,
+                        },
+                        ...
+                    ]
+                }
+            """
+            if not self.is_trained or not self.models:
+                return {"base_prob_3m": None, "base_prob_12m": None, "scenarios": []}
+
+            base_3m = (
+                float(self.predict_proba(base_features, "3m")[0])
+                if "3m" in self.models else None
+            )
+            base_12m = float(self.predict_proba(base_features, "12m")[0])
+
+            results = []
+            for sc in scenarios:
+                label = sc.get("label", "Scenario")
+                overrides = sc.get("overrides", {})
+
+                modified = base_features.copy()
+                for col, val in overrides.items():
+                    if col in modified.columns:
+                        modified[col] = val
+
+                prob_3m = (
+                    float(self.predict_proba(modified, "3m")[0])
+                    if "3m" in self.models else None
+                )
+                prob_12m = float(self.predict_proba(modified, "12m")[0])
+
+                results.append({
+                    "label": label,
+                    "overrides": overrides,
+                    "crash_prob_3m": prob_3m,
+                    "crash_prob_12m": prob_12m,
+                    "delta_3m": (prob_3m - base_3m) if (prob_3m is not None and base_3m is not None) else None,
+                    "delta_12m": prob_12m - base_12m,
+                })
+
+            return {
+                "base_prob_3m": base_3m,
+                "base_prob_12m": base_12m,
+                "scenarios": results,
+            }
+
 else:
     # ── Fallback when LightGBM is not installed ─────────────────────
     class CrashPredictor:
@@ -477,6 +552,12 @@ else:
 
         def get_top_features(self, n: int = 10):
             return []
+
+        def get_shap_values(self, features, horizon: str = "12m"):
+            return []
+
+        def run_counterfactual(self, base_features, scenarios: list) -> dict:
+            return {"base_prob_3m": None, "base_prob_12m": None, "scenarios": []}
 
 
 __all__ = ["CrashPredictor"]

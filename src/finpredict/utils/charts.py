@@ -607,3 +607,164 @@ def chart_calibration_diagram(bt_results, **style):
 
     fig.tight_layout()
     return fig
+
+
+def chart_shap_waterfall(shap_contributions, title="Crash Probability Drivers (SHAP)"):
+    """Horizontal bar chart showing top SHAP contributors to crash probability.
+
+    Args:
+        shap_contributions: list of (feature_name, shap_value) tuples sorted by |SHAP|.
+                            Positive = pushes crash prob UP; negative = pushes it DOWN.
+        title: chart title string
+
+    Returns matplotlib Figure, or None if no data.
+    """
+    if not _MPL_AVAILABLE or not shap_contributions:
+        return None
+
+    top = shap_contributions[:10]
+    names = [t[0] for t in top]
+    values = [t[1] for t in top]
+
+    # Reverse so largest absolute value is at the top
+    names = names[::-1]
+    values = values[::-1]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    fig.patch.set_facecolor(CHART_COLORS['bg'])
+    ax.set_facecolor(CHART_COLORS['bg'])
+
+    colors_bars = [CHART_COLORS['negative'] if v > 0 else CHART_COLORS['positive']
+                   for v in values]
+    bars = ax.barh(names, values, color=colors_bars, edgecolor='none', height=0.6)
+
+    ax.axvline(0, color=CHART_COLORS['neutral'], linewidth=0.8, alpha=0.6)
+
+    for bar, val in zip(bars, values):
+        sign = "+" if val > 0 else ""
+        ax.text(val + (0.001 if val >= 0 else -0.001),
+                bar.get_y() + bar.get_height() / 2,
+                f"{sign}{val:.4f}",
+                va='center', ha='left' if val >= 0 else 'right',
+                color=CHART_COLORS['text'], fontsize=7.5)
+
+    ax.set_xlabel("SHAP Value (impact on log-odds of crash)", color=CHART_COLORS['text'])
+    ax.set_title(title, color=CHART_COLORS['primary'], fontsize=11, fontweight='bold')
+    ax.tick_params(colors=CHART_COLORS['text'], labelsize=8)
+    ax.grid(axis='x', alpha=0.12)
+
+    # Legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor=CHART_COLORS['negative'], label='Increases crash probability'),
+        Patch(facecolor=CHART_COLORS['positive'], label='Decreases crash probability'),
+    ]
+    ax.legend(handles=legend_elements, loc='lower right',
+              facecolor=CHART_COLORS['bg'], edgecolor=CHART_COLORS['neutral'],
+              labelcolor=CHART_COLORS['text'], fontsize=8)
+
+    fig.tight_layout()
+    return fig
+
+
+def chart_stress_test(stress_results, current_price):
+    """Horizontal bar chart showing S&P 500 level after historical crisis replays.
+
+    Args:
+        stress_results: dict from run_stress_tests()
+        current_price: current S&P 500 level
+
+    Returns matplotlib Figure.
+    """
+    if not _MPL_AVAILABLE or not stress_results:
+        return None
+
+    names = list(stress_results.keys())
+    trough_prices = [stress_results[n]['trough_price'] for n in names]
+    drop_pcts = [stress_results[n]['drop_pct'] * 100 for n in names]
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    fig.patch.set_facecolor(CHART_COLORS['bg'])
+    ax.set_facecolor(CHART_COLORS['bg'])
+
+    y_pos = range(len(names))
+    bars = ax.barh(list(y_pos), drop_pcts, color=CHART_COLORS['negative'],
+                   edgecolor='none', height=0.6, alpha=0.85)
+
+    for bar, price, pct in zip(bars, trough_prices, drop_pcts):
+        ax.text(pct - 0.5, bar.get_y() + bar.get_height() / 2,
+                f"${price:,.0f}  ({pct:.1f}%)",
+                va='center', ha='right', color=CHART_COLORS['text'], fontsize=8.5)
+
+    ax.set_yticks(list(y_pos))
+    ax.set_yticklabels(names, color=CHART_COLORS['text'], fontsize=9)
+    ax.set_xlabel("Peak-to-Trough Drop (%)", color=CHART_COLORS['text'])
+    ax.set_title(f"Historical Stress Test — S&P 500 from ${current_price:,.0f}",
+                color=CHART_COLORS['primary'], fontsize=11, fontweight='bold')
+    ax.tick_params(colors=CHART_COLORS['text'])
+    ax.invert_xaxis()
+    ax.grid(axis='x', alpha=0.12)
+
+    fig.tight_layout()
+    return fig
+
+
+def chart_credit_stress(fred_data):
+    """3-panel chart of credit stress indicators: TED spread, HY OAS, IG OAS.
+
+    Args:
+        fred_data: dict from fetch_fred_data(), keyed by series name.
+
+    Returns matplotlib Figure, or None if data unavailable.
+    """
+    if not _MPL_AVAILABLE or not fred_data:
+        return None
+
+    panels = [
+        ("ted_spread",  "TED Spread (%)",           "Interbank Stress"),
+        ("hy_oas",      "HY OAS (bps)",              "High-Yield Spread"),
+        ("ig_oas",      "IG OAS (bps)",              "Invest.-Grade Spread"),
+    ]
+
+    available = [(key, label, title) for key, label, title in panels
+                 if key in fred_data and len(fred_data[key]) > 10]
+
+    if not available:
+        return None
+
+    n = len(available)
+    fig, axes = plt.subplots(n, 1, figsize=(9, 2.5 * n), sharex=False)
+    fig.patch.set_facecolor(CHART_COLORS['bg'])
+
+    if n == 1:
+        axes = [axes]
+
+    for ax, (key, label, title) in zip(axes, available):
+        series = fred_data[key].dropna()
+        if series.empty:
+            ax.set_visible(False)
+            continue
+
+        ax.set_facecolor(CHART_COLORS['bg'])
+        ax.plot(series.index, series.values, color=CHART_COLORS['accent'],
+                linewidth=1.2, alpha=0.9)
+        ax.fill_between(series.index, series.values, alpha=0.12,
+                        color=CHART_COLORS['accent'])
+
+        # Mark current value
+        current_val = float(series.iloc[-1])
+        hist_avg = float(series.mean())
+        ax.axhline(hist_avg, color=CHART_COLORS['neutral'], linewidth=0.8,
+                   linestyle='--', alpha=0.6, label=f"Avg: {hist_avg:.2f}")
+        ax.axhline(current_val, color=CHART_COLORS['primary'], linewidth=1.0,
+                   linestyle='-', alpha=0.8, label=f"Now: {current_val:.2f}")
+
+        ax.set_ylabel(label, color=CHART_COLORS['text'], fontsize=8)
+        ax.set_title(title, color=CHART_COLORS['primary'], fontsize=9, fontweight='bold')
+        ax.tick_params(colors=CHART_COLORS['text'], labelsize=7)
+        ax.legend(facecolor=CHART_COLORS['bg'], edgecolor=CHART_COLORS['neutral'],
+                  labelcolor=CHART_COLORS['text'], fontsize=7, loc='upper left')
+        ax.grid(alpha=0.1)
+
+    fig.tight_layout(h_pad=0.6)
+    return fig

@@ -58,11 +58,14 @@ from finpredict.utils.charts import (
     chart_risk_score, chart_scenarios, chart_sectors, chart_stocks,
     chart_combined_projection_crash, chart_ml_crash_timeline,
     chart_return_scatter, chart_calibration_diagram, CHART_COLORS,
+    chart_shap_waterfall, chart_stress_test, chart_credit_stress,
 )
 
 
 def generate_report(data, mc_results, bt_results, sector_results, stock_results,
-                    current_price, regime, risk_score, crash_freq, output_path):
+                    current_price, regime, risk_score, crash_freq, output_path,
+                    shap_contributions=None, counterfactual_results=None,
+                    stress_results=None, fred_data=None):
     """
     MODULE 10 ENTRY POINT: Generate comprehensive PDF report.
     """
@@ -323,6 +326,158 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     story.append(Spacer(1, 0.1*inch))
     story.append(fig_to_image(chart_risk_score(data), height=4.5*inch))
     story.append(PageBreak())
+
+    # ===== PAGE 6b: CREDIT STRESS INDICATORS =====
+    credit_fig = chart_credit_stress(fred_data)
+    if credit_fig is not None:
+        story.append(Paragraph("CREDIT STRESS INDICATORS", heading_style))
+        credit_text = """
+        Credit markets often lead equity markets by weeks or months. Three key indicators
+        are tracked: the <b>TED Spread</b> (3-month LIBOR minus T-bill rate — measures
+        interbank funding stress), <b>High-Yield OAS</b> (option-adjusted spread for junk
+        bonds — widens when default risk rises), and <b>IG OAS</b> (investment-grade spread
+        — a more sensitive read on corporate credit conditions). All three are sourced from
+        the Federal Reserve (FRED). Dashed lines show historical averages; gold lines show
+        the current reading.
+        """
+        story.append(Paragraph(credit_text, body_style))
+        story.append(Spacer(1, 0.1*inch))
+        story.append(fig_to_image(credit_fig, height=5.5*inch))
+
+        # Current readings table
+        credit_rows = []
+        for key, label in [("ted_spread", "TED Spread (%)"),
+                            ("hy_oas",     "HY OAS (bps)"),
+                            ("ig_oas",     "IG OAS (bps)")]:
+            if fred_data and key in fred_data and len(fred_data[key]) > 0:
+                series = fred_data[key].dropna()
+                if not series.empty:
+                    current_val = float(series.iloc[-1])
+                    hist_avg    = float(series.mean())
+                    hist_max    = float(series.max())
+                    pct_of_max  = current_val / hist_max * 100 if hist_max > 0 else 0.0
+                    credit_rows.append([
+                        label,
+                        f"{current_val:.2f}",
+                        f"{hist_avg:.2f}",
+                        f"{hist_max:.2f}",
+                        f"{pct_of_max:.0f}%",
+                    ])
+        if credit_rows:
+            story.append(Spacer(1, 0.1*inch))
+            story.append(make_table(
+                ["Indicator", "Current", "Hist. Avg", "Hist. Max", "% of Max"],
+                credit_rows,
+                [2.0*inch, 1.0*inch, 1.0*inch, 1.0*inch, 0.9*inch],
+            ))
+        story.append(PageBreak())
+
+    # ===== PAGE 6c: AI EXPLAINABILITY — SHAP CRASH DRIVERS =====
+    if shap_contributions:
+        story.append(Paragraph("AI EXPLAINABILITY — CRASH PROBABILITY DRIVERS", heading_style))
+        shap_text = f"""
+        SHAP (SHapley Additive exPlanations) values decompose the model's current crash
+        probability prediction into the contribution of each individual market signal.
+        <b>Red bars push the crash probability higher</b>; <b>green bars push it lower</b>.
+        The values are on the log-odds scale — a SHAP of +0.10 roughly adds ~2.5 percentage
+        points to crash probability at a baseline of 50%.
+        """
+        story.append(Paragraph(shap_text, body_style))
+        story.append(Spacer(1, 0.1*inch))
+        shap_fig = chart_shap_waterfall(shap_contributions)
+        if shap_fig is not None:
+            story.append(fig_to_image(shap_fig, height=3.8*inch))
+        story.append(Spacer(1, 0.1*inch))
+
+        # SHAP table — top 10 features with value and direction
+        shap_rows = []
+        for feat, sv in shap_contributions[:10]:
+            direction = "INCREASES crash prob" if sv > 0 else "decreases crash prob"
+            shap_rows.append([feat, f"{sv:+.5f}", direction])
+        story.append(make_table(
+            ["Feature", "SHAP Value", "Direction"],
+            shap_rows,
+            [3.0*inch, 1.2*inch, 2.5*inch],
+        ))
+        story.append(Spacer(1, 0.15*inch))
+
+        # What-If / Counterfactual table
+        if counterfactual_results and counterfactual_results.get("scenarios"):
+            story.append(Paragraph("<b>WHAT-IF SENSITIVITY ANALYSIS</b>", body_style))
+            wif_text = """
+            Each row below shows the model's crash probability estimate under a hypothetical
+            change to current market conditions. Only the listed feature(s) are altered;
+            all other signals remain at their current values.
+            """
+            story.append(Paragraph(wif_text, small_style))
+            story.append(Spacer(1, 0.08*inch))
+
+            base_3m  = counterfactual_results.get("base_prob_3m")
+            base_12m = counterfactual_results.get("base_prob_12m", 0)
+            wif_rows = []
+            # Baseline row
+            b3 = f"{base_3m*100:.1f}%" if base_3m is not None else "—"
+            wif_rows.append(["Baseline (current)", b3, f"{base_12m*100:.1f}%", "—", "—"])
+            for sc in counterfactual_results["scenarios"]:
+                p3  = sc.get("crash_prob_3m")
+                p12 = sc.get("crash_prob_12m", 0)
+                d3  = sc.get("delta_3m")
+                d12 = sc.get("delta_12m", 0)
+                p3_str  = f"{p3*100:.1f}%"  if p3  is not None else "—"
+                d3_str  = f"{d3*100:+.1f}%" if d3  is not None else "—"
+                wif_rows.append([
+                    sc["label"],
+                    p3_str,
+                    f"{p12*100:.1f}%",
+                    d3_str,
+                    f"{d12*100:+.1f}%",
+                ])
+            story.append(make_table(
+                ["Scenario", "3M Crash", "12M Crash", "Δ 3M", "Δ 12M"],
+                wif_rows,
+                [2.5*inch, 1.0*inch, 1.0*inch, 0.9*inch, 0.9*inch],
+            ))
+        story.append(PageBreak())
+
+    # ===== PAGE 6d: HISTORICAL STRESS TESTS =====
+    if stress_results:
+        story.append(Paragraph("HISTORICAL STRESS TEST", heading_style))
+        stress_text = f"""
+        Deterministic scenario analysis: applies the exact peak-to-trough drawdown of each
+        major historical crisis to the current S&amp;P 500 level of
+        <b>${current_price:,.0f}</b>. These are not probabilistic forecasts — they answer
+        the question: <i>"If today's market experienced the same severity as [crisis],
+        where would the index trough?"</i> Recovery estimates are historical averages and
+        will vary with future conditions.
+        """
+        story.append(Paragraph(stress_text, body_style))
+        story.append(Spacer(1, 0.1*inch))
+        stress_fig = chart_stress_test(stress_results, current_price)
+        if stress_fig is not None:
+            story.append(fig_to_image(stress_fig, height=3.2*inch))
+        story.append(Spacer(1, 0.1*inch))
+
+        stress_rows = []
+        for name, info in stress_results.items():
+            stress_rows.append([
+                name,
+                f"{info['drop_pct']*100:.1f}%",
+                f"${info['trough_price']:,.0f}",
+                f"{info['drop_points']:+,.0f} pts",
+                f"{info['duration_days']} days",
+                f"{info['recovery_days'] // 30} months",
+            ])
+        story.append(make_table(
+            ["Crisis", "Drop %", "Trough Level", "Points Lost", "Crash Duration", "Recovery Time"],
+            stress_rows,
+            [1.8*inch, 0.7*inch, 1.1*inch, 1.1*inch, 1.1*inch, 1.0*inch],
+        ))
+        story.append(Spacer(1, 0.1*inch))
+        story.append(Paragraph(
+            "<i>Source: Shiller/Yale, NBER. Recovery = calendar days from trough to prior peak.</i>",
+            small_style,
+        ))
+        story.append(PageBreak())
 
     # ===== PAGE 7: INSTITUTIONAL COMPARISON =====
     story.append(Paragraph("INSTITUTIONAL BENCHMARK COMPARISON", heading_style))

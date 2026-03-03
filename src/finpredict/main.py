@@ -39,7 +39,7 @@ from finpredict.data.fred_fetcher import (
 from finpredict.risk import build_risk_score, detect_regimes, identify_crashes
 from finpredict.models.garch import fit_garch
 from finpredict.models.hmm_regimes import fit_hmm_regimes, get_regime_probs
-from finpredict.simulation import run_monte_carlo, compute_valuation_penalty
+from finpredict.simulation import run_monte_carlo, compute_valuation_penalty, run_stress_tests
 from finpredict.simulation.backtest import run_backtest
 from finpredict.models.sectors import analyze_sectors
 from finpredict.models.stocks import select_stocks_from_sectors, analyze_stocks
@@ -184,6 +184,8 @@ def main():
         ml_return_6m = None
         ml_return_p10 = None
         ml_return_p90 = None
+        shap_contributions = None
+        counterfactual_results = None
 
         crash_model = bt_results.attrs.get("crash_model")
         return_model = bt_results.attrs.get("return_model")
@@ -244,6 +246,23 @@ def main():
                     direction = "UP" if sv > 0 else "DOWN"
                     val = current_features[feat].iloc[-1]
                     print(f"    {feat} = {val:.4f} → pushes crash prob {direction} ({sv:+.4f})")
+
+            # Counterfactual / what-if sensitivity analysis
+            _COUNTERFACTUAL_SCENARIOS = [
+                {"label": "VIX spikes to 40",         "overrides": {"vix": 40.0}},
+                {"label": "Yield curve inverts -1%",   "overrides": {"term_spread": -1.0}},
+                {"label": "VIX 40 + inverted curve",   "overrides": {"vix": 40.0, "term_spread": -1.0}},
+                {"label": "VIX falls to 15 (calm)",    "overrides": {"vix": 15.0}},
+            ]
+            counterfactual_results = crash_model.run_counterfactual(
+                current_row, _COUNTERFACTUAL_SCENARIOS
+            )
+            if counterfactual_results.get("scenarios"):
+                print(f"\n  What-If Sensitivity:")
+                for sc in counterfactual_results["scenarios"]:
+                    p12 = sc.get("crash_prob_12m", 0)
+                    d12 = sc.get("delta_12m", 0)
+                    print(f"    {sc['label']}: 12M crash = {p12*100:.1f}% ({d12*100:+.1f}%)")
         else:
             print("\n[WARN] ML models not available — using statistical defaults")
 
@@ -298,6 +317,14 @@ def main():
         )
 
         # ══════════════════════════════════════════════════════════
+        # 10b. HISTORICAL STRESS TESTS
+        # ══════════════════════════════════════════════════════════
+        stress_results = run_stress_tests(current_price)
+        print(f"\n[MODULE 7b] Historical stress tests from S&P ${current_price:,.0f}:")
+        for crisis, info in stress_results.items():
+            print(f"  {crisis}: trough ${info['trough_price']:,.0f} ({info['drop_pct']*100:.1f}%)")
+
+        # ══════════════════════════════════════════════════════════
         # 11. SECTOR ANALYSIS (factor-based differentiation)
         # ══════════════════════════════════════════════════════════
         forecast_days = get_forecast_days()
@@ -346,6 +373,10 @@ def main():
         generate_report(
             data, mc_results, bt_results, sector_results, stock_results,
             current_price, current_regime, current_risk, crash_freq, output_path,
+            shap_contributions=shap_contributions,
+            counterfactual_results=counterfactual_results,
+            stress_results=stress_results,
+            fred_data=fred_data,
         )
 
         # ══════════════════════════════════════════════════════════
