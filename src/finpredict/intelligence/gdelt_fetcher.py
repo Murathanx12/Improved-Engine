@@ -79,14 +79,19 @@ def fetch_gdelt_data(
         else:
             volume_zscore = 0.0
 
+        # Conflict event score: normalize recent conflict news volume vs baseline
+        conflict_data = _fetch_conflict_timeline(lookback_days)
+        conflict_score = _normalize_conflict(conflict_data)
+
         return {
             "avg_tone": avg_tone,
             "tone_trend": tone_trend,
             "volume_zscore": float(volume_zscore),
-            "conflict_score": 0.0,  # TODO: add conflict event extraction
+            "conflict_score": float(conflict_score),
             "raw_data": {
                 "tones": tones[-30:] if len(tones) > 30 else tones,
                 "volumes": volumes[-30:] if len(volumes) > 30 else volumes,
+                "conflict_counts": conflict_data.get("daily_counts", [])[-30:],
             },
             "success": True,
         }
@@ -159,6 +164,67 @@ def _fetch_volume_timeline(query: str, days: int) -> dict:
         return {"success": True, "daily_volumes": volumes}
     except Exception:
         return {"success": False, "daily_volumes": []}
+
+
+def _fetch_conflict_timeline(days: int) -> dict:
+    """Fetch daily conflict/war/crisis article counts from GDELT DOC API."""
+    end_date = datetime.now().strftime("%Y%m%d%H%M%S")
+    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d%H%M%S")
+
+    url = "https://api.gdeltproject.org/api/v2/doc/doc"
+    params = {
+        "query": "conflict OR war OR military OR geopolitical OR sanctions OR crisis",
+        "mode": "timelinevolraw",
+        "startdatetime": start_date,
+        "enddatetime": end_date,
+        "format": "json",
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        if resp.status_code != 200:
+            return {"success": False, "daily_counts": []}
+
+        data = resp.json()
+        timeline = data.get("timeline", [])
+        if not timeline:
+            return {"success": False, "daily_counts": []}
+
+        series = timeline[0].get("data", []) if timeline else []
+        counts = [float(entry.get("value", 0)) for entry in series]
+        return {"success": True, "daily_counts": counts}
+    except Exception:
+        return {"success": False, "daily_counts": []}
+
+
+def _normalize_conflict(conflict_data: dict) -> float:
+    """Map raw conflict article counts to a [0, 1] score.
+
+    Compares the most recent 7-day average against the 90-day baseline.
+    Returns 0.0 when recent conflict coverage is at or below the baseline,
+    and approaches 1.0 when it is several standard deviations above.
+    Falls back to 0.0 when data is unavailable.
+    """
+    if not conflict_data.get("success"):
+        return 0.0
+
+    counts = conflict_data.get("daily_counts", [])
+    if len(counts) < 14:
+        return 0.0
+
+    recent = np.mean(counts[-7:])
+    baseline = np.mean(counts[:-7])
+    std = np.std(counts[:-7])
+
+    if std < 1.0:
+        return 0.0
+
+    # Sigmoid centred at 0 z-scores → 0.5, at +2 z-scores → ~0.88
+    z = (recent - baseline) / std
+    score = 1.0 / (1.0 + np.exp(-z))
+    # Shift so that z=0 (no anomaly) maps to 0 rather than 0.5
+    score = max(0.0, (score - 0.5) * 2.0)
+    return float(min(score, 1.0))
 
 
 def _empty_result(reason: str = "") -> dict:
