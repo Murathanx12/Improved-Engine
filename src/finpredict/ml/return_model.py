@@ -102,7 +102,7 @@ if _HAS_LIGHTGBM:
             combined_importances = np.zeros(len(self.feature_names))
 
             for horizon, target in target_slices.items():
-                y = target.iloc[:train_end_idx] if train_end_idx else target.copy()
+                y = target.iloc[:train_end_idx] if train_end_idx is not None else target.copy()
                 valid_h = y.notna() & X.notna().any(axis=1)
                 X_h = X[valid_h]
                 y_h = y[valid_h]

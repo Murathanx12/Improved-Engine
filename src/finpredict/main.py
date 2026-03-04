@@ -25,7 +25,6 @@ DEPENDENCIES:
 """
 
 import sys
-import io
 import traceback
 
 import numpy as np
@@ -59,8 +58,15 @@ from datetime import datetime
 def main():
     """Complete v7 ML-First engine pipeline."""
     try:
-        if hasattr(sys.stdout, "buffer"):
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+        # Ensure UTF-8 output encoding without replacing the stdout object.
+        # The TextIOWrapper replacement broke output capture in IDEs (VS, VS Code).
+        # reconfigure() is the safe alternative; ignore errors in environments
+        # that don't support it (e.g. some CI runners).
+        try:
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
         np.random.seed(42)
         sim_cfg = config["simulation"]
@@ -389,9 +395,9 @@ def main():
         print(f"  Regime:             {current_regime}"
               f" ({'HMM' if hmm_result.success else 'rule-based'})")
         print(f"  Risk Score:         {current_risk:.2f}σ")
-        if garch_vol:
+        if garch_vol is not None:
             print(f"  GARCH Vol:          {garch_vol*100:.1f}% annualized")
-            if garch_persistence:
+            if garch_persistence is not None:
                 print(f"  GARCH Persistence:  {garch_persistence:.4f}")
         if recession_prob is not None:
             print(f"  Recession Prob:     {recession_prob*100:.1f}% (FRED)")
@@ -400,9 +406,9 @@ def main():
         if ml_crash_prob is not None:
             print(f"  ═══ ML PREDICTIONS (PRIMARY) ═══")
             print(f"  ML Crash (12m):     {ml_crash_prob*100:.1f}%")
-            if ml_crash_6m:
+            if ml_crash_6m is not None:
                 print(f"  ML Crash (6m):      {ml_crash_6m*100:.1f}%")
-            if ml_crash_3m:
+            if ml_crash_3m is not None:
                 print(f"  ML Crash (3m):      {ml_crash_3m*100:.1f}%")
             print(f"  ML Return (12m):    {ml_predicted_return*100:+.1f}%")
             print(f"  ML Return Range:    [{ml_return_p10*100:+.1f}%, {ml_return_p90*100:+.1f}%]")
