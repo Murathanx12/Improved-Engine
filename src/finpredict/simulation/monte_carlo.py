@@ -472,17 +472,63 @@ def run_monte_carlo(
     n_tail = max(1, int(len(sorted_returns) * 0.05))
     cvar_95 = float(sorted_returns[:n_tail].mean()) * 100
 
-    # Max drawdown across all paths
-    max_dd = float(sim_dd.min()) * 100
+    # Max drawdown: average per-path max drawdown (for reporting)
+    per_path_max_dd = sim_dd.min(axis=0)
+    max_dd = float(per_path_max_dd.mean()) * 100
 
     total_return = float(final.mean()) / current_price - 1
     annual_return = (1 + total_return) ** (1 / sim_cfg["forecast_years"]) - 1
+
+    # ── Path-level statistics (required by chart functions) ───────
+    mean_path = all_paths.mean(axis=1)
+    median_path = np.median(all_paths, axis=1)
+    p05_path = np.percentile(all_paths, 5, axis=1)
+    p25_path = np.percentile(all_paths, 25, axis=1)
+    p75_path = np.percentile(all_paths, 75, axis=1)
+    p95_path = np.percentile(all_paths, 95, axis=1)
+
+    # ── Crash probability by horizon ──────────────────────────────
+    trading_days_per_year = sim_cfg["trading_days_per_year"]
+    crash_probs = {}
+    horizon_map = {
+        "1mo": 21, "3mo": 63, "6mo": 126,
+        "12mo": 252, "24mo": 504, "36mo": 756, "60mo": days,
+    }
+    for label, horizon_days in horizon_map.items():
+        if horizon_days > days:
+            horizon_days = days
+        h_dd = sim_dd[:horizon_days + 1]
+        crash_probs[label] = float((h_dd.min(axis=0) <= crash_threshold).mean()) * 100
+
+    # ── Enrich scenario results with config fields ─────────────────
+    for name, scfg in scenarios.items():
+        if name in scenario_results:
+            mean_final = scenario_results[name]["mean_final"]
+            scen_total_ret = (mean_final / current_price - 1) * 100
+            scenario_results[name].update({
+                "probability": scenario_results[name]["weight"],
+                "return": scfg.get("return", 0.0),
+                "total_return": scen_total_ret,
+                "volatility": scfg.get("volatility", historical_sigma),
+                "description": scfg.get("description", ""),
+            })
 
     # ── Realism validation ──────────────────────────────────────
     realism = _validate_realism(all_paths, current_price, sim_cfg["forecast_years"])
 
     return {
+        # Full path array (required by combined chart)
+        "all_paths": all_paths,
+        # Backward-compatible alias
         "paths": all_paths,
+        # Path percentile bands (required by chart_projection and chart_combined_projection_crash)
+        "mean_path": mean_path,
+        "median_path": median_path,
+        "p05": p05_path,
+        "p25": p25_path,
+        "p75": p75_path,
+        "p95": p95_path,
+        # Final-value statistics
         "final_mean": float(final.mean()),
         "final_median": float(np.median(final)),
         "final_p05": float(np.percentile(final, 5)),
@@ -491,12 +537,17 @@ def run_monte_carlo(
         "final_p75": float(np.percentile(final, 75)),
         "final_p90": float(np.percentile(final, 90)),
         "final_p95": float(np.percentile(final, 95)),
+        # Return statistics
         "total_return_pct": total_return * 100,
         "annual_return_pct": annual_return * 100,
+        # Risk statistics
         "crash_prob_1y": crash_1y,
         "crash_prob_5y": crash_full,
+        "crash_probs": crash_probs,
         "cvar_95_pct": cvar_95,
         "max_dd_pct": max_dd,
+        "max_drawdown_pct": abs(max_dd),
+        # Scenario breakdown
         "scenarios": scenario_results,
         # ML inputs (for reporting)
         "ml_crash_prob": ml_crash_prob,
