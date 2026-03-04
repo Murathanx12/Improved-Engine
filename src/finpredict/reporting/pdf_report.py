@@ -131,7 +131,7 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     1-Year Crash Probability: {mc_results['crash_prob_1y']:.1f}%<br/>
     5-Year Crash Probability: {mc_results['crash_prob_5y']:.1f}%<br/>
     CVaR (95%): {mc_results['cvar_95_pct']:.1f}%<br/>
-    Avg Max Drawdown: {mc_results['max_drawdown_pct']:.1f}%
+    Avg Max Drawdown: {mc_results['max_dd_pct']:.1f}%
     """
     story.append(Paragraph(exec_text, body_style))
     story.append(PageBreak())
@@ -285,9 +285,8 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     # ===== PAGE 5: CRASH PROBABILITY =====
     story.append(Paragraph("CRASH PROBABILITY ANALYSIS", heading_style))
 
-    cp = mc_results['crash_probs']
-    cp_1y = cp.get('12mo', 0)
-    cp_5y = cp.get('60mo', 0)
+    cp_1y = mc_results.get('crash_prob_1y', 0)
+    cp_5y = mc_results.get('crash_prob_5y', 0)
 
     crash_text = f"""
     <b>This is the primary deliverable of the engine.</b> The model estimates the probability
