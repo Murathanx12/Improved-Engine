@@ -40,19 +40,24 @@ def detect_regimes(data: pd.DataFrame, window: int = 252) -> tuple[pd.Series, st
 
     thresholds = config["risk"]["regimes"]
     returns = data["SP500"].pct_change()
-    log_returns = np.log(1 + returns.dropna())  # Geometric (consistent with backtest)
+    # Keep the same index as `returns` so label-based slicing stays aligned.
+    # dropna() would shorten the series and cause off-by-one errors when using
+    # positional .iloc on both series simultaneously.
+    log_returns = np.log(1 + returns).replace([np.inf, -np.inf], np.nan)
     regimes = pd.Series(index=data.index, dtype=str, data="")
 
     has_vix = "VIX" in data.columns
     has_risk = "Risk_Score" in data.columns
 
     for i in range(window, len(returns)):
-        w = log_returns.iloc[max(0, i - window):i]
+        # Slice by label so both series cover exactly the same calendar window
+        date_window = returns.index[max(0, i - window):i]
+        w = log_returns.loc[date_window].dropna()
         if len(w) < 60:
             continue
 
         ann_ret = w.mean() * 252    # Geometric annualized return
-        ann_vol = returns.iloc[max(0, i - window):i].std() * np.sqrt(252)
+        ann_vol = returns.loc[date_window].std() * np.sqrt(252)
 
         # Base classification (price-based)
         if ann_vol > thresholds["high_vol_threshold"]:

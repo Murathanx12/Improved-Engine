@@ -56,8 +56,9 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
     df["dist_52w_high"] = (sp - high_252) / high_252  # Always <= 0
     df["dist_52w_low"] = (sp - low_252) / low_252     # Always >= 0
 
-    # Current drawdown from rolling peak
-    df["drawdown_from_peak"] = (sp - high_252) / high_252
+    # Current drawdown from rolling peak — alias of dist_52w_high (same formula).
+    # Use the already-computed column to avoid a duplicate feature in the ML matrix.
+    df["drawdown_from_peak"] = df["dist_52w_high"]
 
     # ═══════════════════════════════════════════════════════════════
     # 3. VOLATILITY (realized, ratios, higher moments)
