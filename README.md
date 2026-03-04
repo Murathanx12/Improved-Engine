@@ -24,7 +24,7 @@ cp .env.example .env
 python test_setup.py
 
 # Run the engine
-make run
+python -m finpredict.main
 ```
 
 ## Architecture
