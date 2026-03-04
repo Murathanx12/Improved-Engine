@@ -288,7 +288,7 @@ if _HAS_LIGHTGBM:
             # ── Compute metrics ───────────────────────────────────────
             cal_probs = calibrator.predict(raw_probs)
             val_brier = brier_score_loss(val_y, cal_probs)
-            val_logloss = log_loss(val_y, np.clip(cal_probs, 1e-7, 1 - 1e-7))
+            val_logloss = log_loss(val_y, np.clip(cal_probs, 1e-7, 1 - 1e-7), labels=[0, 1])
 
             try:
                 val_auc = roc_auc_score(val_y, cal_probs)
