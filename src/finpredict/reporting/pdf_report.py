@@ -124,7 +124,7 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     <b>5-YEAR PROJECTION</b><br/>
     Mean Target: ${mc_results['final_mean']:,.0f} ({mc_results['total_return_pct']:+.1f}%)<br/>
     Median Target: ${mc_results['final_median']:,.0f}<br/>
-    90% Range: ${mc_results['p05'][-1]:,.0f} to ${mc_results['p95'][-1]:,.0f}<br/>
+    90% Range: ${mc_results['final_p05']:,.0f} to ${mc_results['final_p95']:,.0f}<br/>
     Annualized Return: {mc_results['annual_return_pct']:.1f}%<br/><br/>
 
     <b>RISK ASSESSMENT</b><br/>
