@@ -291,29 +291,36 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
     # 9. FRED MACRO FEATURES (time-varying, if provided)
     # ═══════════════════════════════════════════════════════════════
     if fred_data:
+        # Collect all new columns in a dict then concat once to avoid fragmentation
+        fred_cols: Dict[str, pd.Series] = {}
         for k, series in fred_data.items():
             try:
                 s = pd.Series(series).astype(float)
                 s.index = pd.to_datetime(s.index)
                 s = s.reindex(df.index).ffill()
                 col = f"fred_{k}"
-                df[col] = s
+                fred_cols[col] = s
                 # ── Rate-of-change derivatives (more predictive than raw levels) ──
-                df[f"{col}_chg_3m"] = df[col].pct_change(63)
-                df[f"{col}_chg_12m"] = df[col].pct_change(252)
-                col_mean = df[col].rolling(252).mean()
-                col_std = df[col].rolling(252).std()
-                df[f"{col}_zscore"] = (df[col] - col_mean) / col_std.replace(0, np.nan)
+                fred_cols[f"{col}_chg_3m"] = s.pct_change(63)
+                fred_cols[f"{col}_chg_12m"] = s.pct_change(252)
+                col_mean = s.rolling(252).mean()
+                col_std = s.rolling(252).std()
+                fred_cols[f"{col}_zscore"] = (s - col_mean) / col_std.replace(0, np.nan)
             except Exception:
                 continue
+        if fred_cols:
+            df = pd.concat([df, pd.DataFrame(fred_cols, index=df.index)], axis=1)
 
     # ── FRED interaction features ─────────────────────────────────
     # Credit OAS × vol (widening spreads + rising vol = systemic stress)
+    interaction_cols: Dict[str, pd.Series] = {}
     if "fred_hy_oas" in df.columns:
-        df["hy_oas_x_vol"] = df["fred_hy_oas"] * df["vol_1m"]
+        interaction_cols["hy_oas_x_vol"] = df["fred_hy_oas"] * df["vol_1m"]
     # Geopolitical risk × momentum (rising GPR + falling market = crisis)
     if "fred_gpr_world" in df.columns:
-        df["gpr_x_mom"] = df["fred_gpr_world"] * df["mom_1m"]
+        interaction_cols["gpr_x_mom"] = df["fred_gpr_world"] * df["mom_1m"]
+    if interaction_cols:
+        df = pd.concat([df, pd.DataFrame(interaction_cols, index=df.index)], axis=1)
 
     # ═══════════════════════════════════════════════════════════════
     # 10. FINAL CLEANUP
