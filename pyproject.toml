@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "finpredict"
-version = "4.5.0"
+version = "7.0.0"
 description = "Market prediction engine with crash probability analysis"
 requires-python = ">=3.11"
 dependencies = [

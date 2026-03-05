@@ -115,6 +115,8 @@ def main():
 
         # Extract GARCH persistence for MC volatility dynamics
         garch_persistence = None
+        garch_xi = None
+        garch_rho_leverage = None
         if garch_result.success:
             # Persistence = alpha + gamma/2 + beta (for GJR-GARCH)
             garch_persistence = (
@@ -124,6 +126,34 @@ def main():
             )
             print(f"  [GARCH] Conditional vol: {garch_vol*100:.1f}%")
             print(f"  [GARCH] Persistence: {garch_persistence:.4f}")
+
+            # Derive vol-of-vol (xi) and leverage correlation (rho) from GARCH
+            garch_cfg = config.get("simulation", {}).get("garch_derived_params", {})
+            alpha = garch_result.alpha
+            gamma = garch_result.gamma
+
+            # rho_leverage: derived from GJR-GARCH asymmetry parameter
+            rho_raw = -np.sqrt(gamma / (2 * alpha + gamma + 1e-8))
+            garch_rho_leverage = float(np.clip(
+                rho_raw,
+                garch_cfg.get("rho_leverage_min", -0.95),
+                garch_cfg.get("rho_leverage_max", -0.30),
+            ))
+
+            # xi: coefficient of variation of GARCH conditional volatility
+            # conditional_volatility from arch is in % units (returns scaled ×100)
+            if garch_result.model_fit is not None:
+                cond_vol = garch_result.model_fit.conditional_volatility / 100
+                xi_raw = float(cond_vol.std() / cond_vol.mean()) if cond_vol.mean() > 0 else 0.06
+                garch_xi = float(np.clip(
+                    xi_raw,
+                    garch_cfg.get("xi_min", 0.02),
+                    garch_cfg.get("xi_max", 0.15),
+                ))
+
+            print(f"  [GARCH] Derived rho_leverage: {garch_rho_leverage:.3f}")
+            if garch_xi is not None:
+                print(f"  [GARCH] Derived xi (vol-of-vol): {garch_xi:.4f}")
 
         # ══════════════════════════════════════════════════════════
         # 4. HMM REGIME DETECTION
@@ -210,8 +240,12 @@ def main():
             current_features = build_feature_matrix(data, fred_data=fred_data)
             current_row = current_features.iloc[-1:]
 
-            # Multi-horizon crash predictions
-            ml_crash_prob = float(crash_model.predict_proba(current_row, "12m")[0])
+            # Multi-horizon crash predictions (with SHAP for 12m)
+            shap_result = crash_model.predict_with_shap(
+                current_row, "12m", compute_shap=True,
+            )
+            ml_crash_prob = float(shap_result["crash_prob"][0])
+            shap_values = shap_result.get("shap_values")
             if "6m" in crash_model.models:
                 ml_crash_6m = float(crash_model.predict_proba(current_row, "6m")[0])
             if "3m" in crash_model.models:
@@ -254,13 +288,21 @@ def main():
                     print(f"    {feat} = {val:.4f} (importance: {imp:.1f})")
 
             # SHAP explanations (why the model is predicting this crash probability)
-            shap_contributions = crash_model.get_shap_values(current_row, "12m")
-            if shap_contributions:
+            # Use shap_values from predict_with_shap (already computed above)
+            if shap_values:
+                shap_contributions = sorted(
+                    shap_values.items(), key=lambda x: abs(x[1]), reverse=True,
+                )
                 print(f"\n  SHAP Crash Drivers (current prediction):")
                 for feat, sv in shap_contributions[:7]:
                     direction = "UP" if sv > 0 else "DOWN"
-                    val = current_features[feat].iloc[-1]
-                    print(f"    {feat} = {val:.4f} → pushes crash prob {direction} ({sv:+.4f})")
+                    if feat in current_features.columns:
+                        val = current_features[feat].iloc[-1]
+                        print(f"    {feat} = {val:.4f} → pushes crash prob {direction} ({sv:+.4f})")
+                    else:
+                        print(f"    {feat} → pushes crash prob {direction} ({sv:+.4f})")
+            else:
+                shap_contributions = None
 
             # Counterfactual / what-if sensitivity analysis
             _COUNTERFACTUAL_SCENARIOS = [
@@ -336,6 +378,9 @@ def main():
             hmm_regime_probs=hmm_probs_arr,
             hmm_state_vols=hmm_vols,
             historical_residuals=historical_residuals,
+            seed=42,
+            xi=garch_xi,
+            rho_leverage=garch_rho_leverage,
         )
 
         # ══════════════════════════════════════════════════════════

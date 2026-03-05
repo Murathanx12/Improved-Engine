@@ -82,6 +82,8 @@ if _HAS_LIGHTGBM:
             self.is_trained = False
             self._train_crash_rate = {}      # base rate per horizon for fallback
             self._lgb_brier = {}             # {horizon: brier_score} for model selection
+            self.selected_model = {}         # {horizon: "lgb" | "logistic"}
+            self.model_selection_results = {}  # {horizon: {lgb_brier, logistic_brier, selected}}
 
         def train(
             self,
@@ -163,8 +165,90 @@ if _HAS_LIGHTGBM:
             self.feature_importances_ = dict(zip(self.feature_names, combined_importances))
             self.is_trained = True
 
+            # ── Automatic model selection: LightGBM vs Logistic ──────────
+            # Compare OOS Brier scores and select the winner per horizon.
+            # Uses a dedicated selection fold (second-to-last 20%) to avoid
+            # reporting optimistically biased metrics on the same data.
+            for horizon in list(self.models.keys()):
+                self._select_model_for_horizon(
+                    X, target_slices.get(horizon), horizon, train_end_idx,
+                )
+
             primary_result = results.get("12m", list(results.values())[0])
             return primary_result
+
+        def _select_model_for_horizon(
+            self,
+            X: pd.DataFrame,
+            target: pd.Series,
+            horizon: str,
+            train_end_idx: Optional[int],
+        ):
+            """Compare LightGBM and logistic on a held-out selection fold.
+
+            Uses the second-to-last 20% of data for model selection
+            (the last 20% is reserved for evaluation reporting).
+            """
+            if target is None:
+                self.selected_model[horizon] = "lgb"
+                return
+
+            y = target.iloc[:train_end_idx] if train_end_idx is not None else target.copy()
+            valid = y.notna() & X.iloc[:len(y)].notna().any(axis=1)
+            X_v = X.iloc[:len(y)][valid]
+            y_v = y[valid].astype(int)
+
+            n = len(X_v)
+            # selection fold = second-to-last 20%
+            sel_end = int(n * 0.8)
+            sel_start = int(n * 0.6)
+            if sel_start >= sel_end or sel_end - sel_start < 20:
+                self.selected_model[horizon] = "lgb"
+                return
+
+            X_sel = X_v.iloc[sel_start:sel_end]
+            y_sel = y_v.iloc[sel_start:sel_end]
+
+            if y_sel.nunique() < 2:
+                self.selected_model[horizon] = "lgb"
+                return
+
+            # LightGBM Brier on selection fold
+            lgb_brier = float("inf")
+            if horizon in self.models:
+                try:
+                    lgb_raw = self.models[horizon].predict_proba(X_sel[self.feature_names])[:, 1]
+                    if horizon in self.calibrators:
+                        lgb_cal = self.calibrators[horizon].predict_proba(lgb_raw.reshape(-1, 1))[:, 1]
+                    else:
+                        lgb_cal = lgb_raw
+                    lgb_brier = float(brier_score_loss(y_sel, lgb_cal))
+                except Exception:
+                    lgb_brier = float("inf")
+
+            # Logistic Brier on selection fold
+            logistic_brier = float("inf")
+            if horizon in self.logistic_models:
+                try:
+                    lm = self.logistic_models[horizon]
+                    feat_cols = lm["features"]
+                    avail = all(f in X_sel.columns for f in feat_cols)
+                    if avail:
+                        X_log = lm["scaler"].transform(X_sel[feat_cols].fillna(0))
+                        log_probs = lm["model"].predict_proba(X_log)[:, 1]
+                        logistic_brier = float(brier_score_loss(y_sel, log_probs))
+                except Exception:
+                    logistic_brier = float("inf")
+
+            selected = "lgb" if lgb_brier <= logistic_brier else "logistic"
+            self.selected_model[horizon] = selected
+            self.model_selection_results[horizon] = {
+                "lgb_brier": lgb_brier,
+                "logistic_brier": logistic_brier,
+                "selected": selected,
+            }
+            print(f"  [ML] Horizon {horizon}: selected {selected} "
+                  f"(lgb_brier={lgb_brier:.4f}, logistic_brier={logistic_brier:.4f})")
 
         def _train_severity_ensemble(
             self,
@@ -467,9 +551,9 @@ if _HAS_LIGHTGBM:
 
             X = features[self.feature_names] if isinstance(features, pd.DataFrame) else features
 
-            # ── Model selection based on LightGBM performance ──────────
-            lgb_brier = self._lgb_brier.get(horizon, 1.0)
-            use_logistic = lgb_brier > 0.22 and horizon in self.logistic_models
+            # ── Model selection based on automatic comparison ──────────
+            selected = self.selected_model.get(horizon, "lgb")
+            use_logistic = selected == "logistic" and horizon in self.logistic_models
 
             if use_logistic:
                 # LightGBM near random — use logistic regression
@@ -517,6 +601,78 @@ if _HAS_LIGHTGBM:
             for horizon in self.models:
                 results[horizon] = self.predict_proba(features, horizon)
             return results
+
+        def predict_with_shap(
+            self,
+            features: pd.DataFrame,
+            horizon: str = "12m",
+            compute_shap: bool = False,
+        ) -> dict:
+            """Predict crash probability with optional SHAP explanations.
+
+            SHAP computation on LightGBM with 80+ features and 800 estimators
+            takes 10-30s per call. Only compute when explicitly requested.
+
+            Args:
+                features: Feature matrix.
+                horizon: Prediction horizon.
+                compute_shap: If True and LightGBM selected, compute SHAP values.
+
+            Returns:
+                dict with keys:
+                    crash_prob: np.ndarray of calibrated probabilities
+                    shap_values: Optional dict of {feature: shap_value} (top 10)
+                    selected_model: "lgb" or "logistic"
+            """
+            probs = self.predict_proba(features, horizon)
+            selected = self.selected_model.get(horizon, "lgb")
+            result = {
+                "crash_prob": probs,
+                "selected_model": selected,
+                "shap_values": None,
+            }
+
+            if not compute_shap or selected != "lgb":
+                return result
+
+            if horizon not in self.models:
+                return result
+
+            try:
+                import shap
+                model = self.models[horizon]
+                X = features[self.feature_names] if isinstance(features, pd.DataFrame) else features
+
+                explainer = shap.TreeExplainer(model)
+                shap_vals = explainer.shap_values(X)
+
+                # For binary classification, shap_values may be a list [class_0, class_1]
+                if isinstance(shap_vals, list):
+                    sv = shap_vals[1]  # Class 1 (crash)
+                else:
+                    sv = shap_vals
+
+                # Take the last row (current prediction), top 10 by abs value
+                if sv.ndim == 2:
+                    sv_row = sv[-1]
+                else:
+                    sv_row = sv
+
+                feat_shap = dict(zip(self.feature_names, sv_row))
+                top_10 = dict(sorted(
+                    feat_shap.items(),
+                    key=lambda x: abs(x[1]),
+                    reverse=True,
+                )[:10])
+
+                result["shap_values"] = top_10
+
+            except ImportError:
+                pass  # shap not installed
+            except Exception as e:
+                print(f"  [WARN] SHAP computation failed: {e}")
+
+            return result
 
         def get_discrimination_report(self) -> dict:
             """Report on model's ability to discriminate crash vs non-crash."""

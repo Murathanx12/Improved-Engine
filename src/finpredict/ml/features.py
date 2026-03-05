@@ -56,9 +56,6 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
     df["dist_52w_high"] = (sp - high_252) / high_252  # Always <= 0
     df["dist_52w_low"] = (sp - low_252) / low_252     # Always >= 0
 
-    # Current drawdown from rolling peak — alias of dist_52w_high (same formula).
-    # Use the already-computed column to avoid a duplicate feature in the ML matrix.
-    df["drawdown_from_peak"] = df["dist_52w_high"]
 
     # ═══════════════════════════════════════════════════════════════
     # 3. VOLATILITY (realized, ratios, higher moments)
@@ -262,7 +259,7 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
         df["vix_x_spread"] = df["vix"] * df["term_spread"]
 
     # Vol × drawdown (high vol during drawdown = panic)
-    df["vol_x_drawdown"] = df["vol_1m"] * df["drawdown_from_peak"]
+    df["vol_x_dist52w"] = df["vol_1m"] * df["dist_52w_high"]
 
     # Momentum × RSI (overbought/oversold confirmation)
     if "rsi_14d_norm" in df.columns:
@@ -273,7 +270,7 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
 
     # Drawdown × VIX (market stress compound indicator)
     if "vix" in df.columns:
-        df["drawdown_x_vix"] = df["drawdown_from_peak"] * df["vix"]
+        df["dist52w_x_vix"] = df["dist_52w_high"] * df["vix"]
         df["vix_x_mom"] = df["vix"] * df["mom_1m"]
 
     # Yield spread × vol (tightening + high vol = stress)
@@ -286,7 +283,7 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
 
     # SKEW × drawdown (elevated tail hedging during drawdown = institutional panic)
     if "skew_zscore" in df.columns:
-        df["skew_x_drawdown"] = df["skew_zscore"] * df["drawdown_from_peak"]
+        df["skew_x_dist52w"] = df["skew_zscore"] * df["dist_52w_high"]
 
     # ═══════════════════════════════════════════════════════════════
     # 9. FRED MACRO FEATURES (time-varying, if provided)

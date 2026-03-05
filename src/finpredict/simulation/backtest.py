@@ -261,6 +261,56 @@ def run_backtest(
         _print_results(bt, crash_model, return_model, ml_train_log)
         bt.attrs.update(_compute_metrics(bt, crash_model, return_model, ml_train_log))
 
+        # ── Evaluation module integration ─────────────────────────────
+        try:
+            from finpredict.evaluation.metrics import (
+                brier_score as eval_brier_score,
+                brier_skill_score,
+                reliability_diagram,
+                prediction_spread_check,
+            )
+
+            y_pred = bt["ml_crash_12m"].values
+            y_true = bt["actual_crash_12m"].astype(float).values
+
+            bs = eval_brier_score(y_pred, y_true)
+            bss_clim = brier_skill_score(y_pred, y_true, baseline="climatology")
+            rel = reliability_diagram(y_pred, y_true)
+            spread = prediction_spread_check(y_pred)
+
+            eval_results = {
+                "brier_score": bs,
+                "bss_vs_climatology": bss_clim,
+                "calibration_error": rel["calibration_error"],
+                "prediction_spread": spread,
+            }
+
+            # VIX baseline (if VIX data available in backtest context)
+            if "vix" in bt.columns:
+                bss_vix = brier_skill_score(
+                    y_pred, y_true, baseline="vix25",
+                    vix_series=bt["vix"],
+                )
+                eval_results["bss_vs_vix"] = bss_vix
+
+            bt.attrs["evaluation"] = eval_results
+
+            print(f"\n  [EVAL] ═══ MODEL EVALUATION ═══")
+            print(f"  [EVAL] Brier Score:          {bs:.4f}")
+            print(f"  [EVAL] BSS vs Climatology:   {bss_clim:.4f}")
+            print(f"  [EVAL] Calibration Error:    {rel['calibration_error']:.4f}")
+            if spread["is_underdispersed"]:
+                print(f"  [EVAL] [WARN] Predictions are underdispersed (std={spread['std']:.4f})")
+            if bss_clim < 0.02:
+                print(f"  [EVAL] [WARN] Model barely beats naive baseline (BSS={bss_clim:.4f})")
+            elif bss_clim > 0:
+                print(f"  [EVAL] [OK] Model beats climatology baseline")
+            else:
+                print(f"  [EVAL] [WARN] Model does NOT beat climatology baseline")
+
+        except Exception as e:
+            print(f"  [EVAL] Evaluation failed: {e}")
+
     return bt
 
 
