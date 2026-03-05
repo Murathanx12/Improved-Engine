@@ -153,7 +153,9 @@ def main():
 
         # Consistency check: if HMM says Bear/Crisis but risk score is low,
         # the HMM state labels may have swapped due to random seed. Downgrade.
-        if current_regime in ("Bear", "Crisis") and current_risk < 0.5:
+        if (pd.notna(current_risk)
+                and current_regime in ("Bear", "Crisis")
+                and current_risk < 0.5):
             print(f"  [WARN] HMM regime '{current_regime}' contradicts "
                   f"low risk score ({current_risk:.2f}σ), downgrading to Neutral")
             current_regime = "Neutral"
@@ -316,6 +318,9 @@ def main():
 
         # Compute historical residuals for block bootstrap
         historical_residuals = data["SP500"].pct_change().dropna().values[-252 * 10:]
+        if len(historical_residuals) < 504:
+            print("  [WARN] Insufficient history for block bootstrap (<2yr); using i.i.d. sampling")
+            historical_residuals = None
 
         mc_results = run_monte_carlo(
             current_price, current_regime, current_risk,

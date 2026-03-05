@@ -135,6 +135,7 @@ risk:
     high_vol_threshold: 0.30          # Annual vol above this = "Volatile"
     bull_return_threshold: 0.08       # Annual return above this = "Bull"
     neutral_return_threshold: 0.00    # Annual return above this (but below bull) = "Neutral"
+    bear_return_threshold: -0.10      # Annual return above this (but below neutral) = "Bear"
     vix_stress_threshold: 25          # VIX above this = stress signal
     risk_stress_threshold: 1.5        # Risk score above this = stress signal
     vix_calm_threshold: 16            # VIX below this in Bear = recovery

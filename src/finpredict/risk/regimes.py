@@ -64,13 +64,14 @@ def detect_regimes(data: pd.DataFrame, window: int = 252) -> tuple[pd.Series, st
         # that previously fell into the "Bear" catch-all. This prevents
         # mislabeling normal consolidation periods as bear markets.
         neutral_threshold = thresholds.get("neutral_return_threshold", 0.00)
+        bear_threshold = thresholds.get("bear_return_threshold", -0.10)
         if ann_vol > thresholds["high_vol_threshold"]:
             base_regime = "Volatile"
         elif ann_ret > thresholds["bull_return_threshold"]:
             base_regime = "Bull"
         elif ann_ret > neutral_threshold:
             base_regime = "Neutral"
-        elif ann_ret > -0.10:
+        elif ann_ret > bear_threshold:
             base_regime = "Bear"
         else:
             base_regime = "Volatile"

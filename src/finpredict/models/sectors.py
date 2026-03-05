@@ -242,12 +242,11 @@ def analyze_sectors(
     return results
 
 
-# Approximate S&P 500 sector weights
+# Approximate S&P 500 sector weights (names match engine_config.yaml)
 _SECTOR_WEIGHTS = {
     'Technology': 0.32, 'Healthcare': 0.12, 'Financials': 0.13,
-    'Consumer Disc.': 0.10, 'Consumer Discretionary': 0.10,
-    'Communications': 0.09, 'Communication Services': 0.09,
-    'Industrials': 0.09, 'Consumer Staples': 0.06,
+    'Consumer Disc.': 0.10, 'Industrials': 0.09,
+    'Communications': 0.09, 'Consumer Staples': 0.06,
     'Energy': 0.03, 'Utilities': 0.02, 'Real Estate': 0.02,
     'Materials': 0.02,
 }
@@ -270,6 +269,9 @@ def _normalize_to_index(sector_results: dict, index_return_pct: float):
     ) / total_w
 
     gap = weighted_avg - index_return_pct
+    if np.isnan(weighted_avg) or np.isnan(gap):
+        print("  [WARN] NaN in sector normalization; skipping")
+        return
     for r in sector_results.values():
         r['sim_total_return'] -= gap
         r['expected_total'] -= gap

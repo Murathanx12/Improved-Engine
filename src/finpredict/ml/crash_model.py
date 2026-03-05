@@ -40,6 +40,7 @@ try:
     import lightgbm as lgb
     from sklearn.linear_model import LogisticRegression as _PlattScaler
     from sklearn.metrics import brier_score_loss, roc_auc_score, log_loss
+    from sklearn.preprocessing import StandardScaler
 
     _HAS_LIGHTGBM = True
 except ImportError:
@@ -300,18 +301,25 @@ if _HAS_LIGHTGBM:
             # vs isotonic's N parameters, making it far more robust with
             # sparse positive examples (~10% crash base rate).
             raw_probs = model.predict_proba(val_X)[:, 1]
-            calibrator = _PlattScaler(C=1.0, solver='lbfgs', max_iter=1000)
-            calibrator.fit(raw_probs.reshape(-1, 1), val_y.values)
-            self.calibrators[horizon] = calibrator
 
-            # ── Verify calibration preserved monotonicity ─────────────
-            test_scores = np.linspace(
-                max(raw_probs.min(), 1e-6), min(raw_probs.max(), 1 - 1e-6), 20
-            )
-            cal_test = calibrator.predict_proba(test_scores.reshape(-1, 1))[:, 1]
-            if np.corrcoef(test_scores, cal_test)[0, 1] < 0.5:
-                print(f"  [WARN] Calibration may be inverted for {horizon}, using raw probs")
-                self.calibrators.pop(horizon, None)
+            if raw_probs.std() < 1e-6:
+                # Zero variance: LightGBM produced constant predictions.
+                # Platt scaling on degenerate input produces garbage — skip.
+                print(f"  [WARN] Zero variance in raw probs for {horizon}, skipping calibration")
+            else:
+                calibrator = _PlattScaler(C=1.0, solver='lbfgs', max_iter=1000)
+                calibrator.fit(raw_probs.reshape(-1, 1), val_y.values)
+                self.calibrators[horizon] = calibrator
+
+                # ── Verify calibration preserved monotonicity ─────────────
+                test_scores = np.linspace(
+                    max(raw_probs.min(), 1e-6), min(raw_probs.max(), 1 - 1e-6), 20
+                )
+                cal_test = calibrator.predict_proba(test_scores.reshape(-1, 1))[:, 1]
+                corr = np.corrcoef(test_scores, cal_test)[0, 1]
+                if np.isnan(corr) or corr < 0.5:
+                    print(f"  [WARN] Calibration may be inverted for {horizon}, using raw probs")
+                    self.calibrators.pop(horizon, None)
 
             # ── Compute metrics ───────────────────────────────────────
             if horizon in self.calibrators:
@@ -379,7 +387,7 @@ if _HAS_LIGHTGBM:
                 for canonical, aliases in feat_map.items():
                     if canonical not in available_feats:
                         for alias in aliases:
-                            if alias in X_v.columns:
+                            if alias in X_v.columns and alias not in available_feats:
                                 available_feats.append(alias)
                                 break
 
@@ -390,7 +398,6 @@ if _HAS_LIGHTGBM:
 
             # Simple 80/20 split
             split = int(len(X_log) * 0.8)
-            from sklearn.preprocessing import StandardScaler
             scaler = StandardScaler()
             X_train = scaler.fit_transform(X_log.iloc[:split])
             X_val = scaler.transform(X_log.iloc[split:])
@@ -477,6 +484,10 @@ if _HAS_LIGHTGBM:
 
             if not use_logistic:
                 # Primary: LightGBM with Platt scaling
+                if not self.models:
+                    # All training failed — return base rate
+                    base = self._train_crash_rate.get(horizon, 0.12)
+                    return np.full(len(X), base)
                 if horizon not in self.models:
                     horizon = list(self.models.keys())[0]
 
