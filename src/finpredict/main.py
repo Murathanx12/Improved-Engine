@@ -150,6 +150,13 @@ def main():
 
         current_price = float(data["SP500"].iloc[-1])
         current_risk = float(data["Risk_Score"].iloc[-1])
+
+        # Consistency check: if HMM says Bear/Crisis but risk score is low,
+        # the HMM state labels may have swapped due to random seed. Downgrade.
+        if current_regime in ("Bear", "Crisis") and current_risk < 0.5:
+            print(f"  [WARN] HMM regime '{current_regime}' contradicts "
+                  f"low risk score ({current_risk:.2f}σ), downgrading to Neutral")
+            current_regime = "Neutral"
         current_vix = (
             float(data["VIX"].iloc[-1]) if "VIX" in data.columns else 20.0
         )
@@ -307,6 +314,9 @@ def main():
         hmm_probs_arr = hmm_result.regime_probs if hmm_result.success else None
         hmm_vols = hmm_result.state_vols if hmm_result.success else None
 
+        # Compute historical residuals for block bootstrap
+        historical_residuals = data["SP500"].pct_change().dropna().values[-252 * 10:]
+
         mc_results = run_monte_carlo(
             current_price, current_regime, current_risk,
             crash_freq, current_vix, yield_curve, val_penalty,
@@ -320,6 +330,7 @@ def main():
             hmm_state_means=hmm_means,
             hmm_regime_probs=hmm_probs_arr,
             hmm_state_vols=hmm_vols,
+            historical_residuals=historical_residuals,
         )
 
         # ══════════════════════════════════════════════════════════
@@ -418,9 +429,15 @@ def main():
         print(f"  5Y Projection:      ${mc_results['final_mean']:,.0f} "
               f"({mc_results['total_return_pct']:+.1f}%)")
         print(f"  Annualized:         {mc_results['annual_return_pct']:.1f}%")
-        print(f"  1Y Crash Prob (MC): {mc_results['crash_prob_1y']:.1f}%")
+        if ml_crash_prob is not None:
+            print(f"  ML Crash (12m):     {ml_crash_prob*100:.1f}%")
+        print(f"  MC Crash (12m):     {mc_results['crash_prob_1y']:.1f}% (conditioned on ML)")
+        if ml_crash_prob is not None and abs(ml_crash_prob * 100 - mc_results['crash_prob_1y']) > 10:
+            print(f"  [WARN] ML and MC crash probs diverge by "
+                  f"{abs(ml_crash_prob * 100 - mc_results['crash_prob_1y']):.0f}pp — calibration concern")
         print(f"  5Y Crash Prob (MC): {mc_results['crash_prob_5y']:.1f}%")
-        print(f"  CVaR (95%):         {mc_results['cvar_95_pct']:.1f}%")
+        print(f"  1Y CVaR (95%):      {mc_results.get('cvar_95_1y_pct', mc_results['cvar_95_pct']):.1f}%")
+        print(f"  5Y CVaR (95%):      {mc_results.get('cvar_95_5y_pct', mc_results['cvar_95_pct']):.1f}%")
         print()
 
         if len(bt_results) > 0:

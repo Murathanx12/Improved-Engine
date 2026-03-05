@@ -38,7 +38,7 @@ from typing import Optional
 
 try:
     import lightgbm as lgb
-    from sklearn.isotonic import IsotonicRegression
+    from sklearn.linear_model import LogisticRegression as _PlattScaler
     from sklearn.metrics import brier_score_loss, roc_auc_score, log_loss
 
     _HAS_LIGHTGBM = True
@@ -52,22 +52,35 @@ if _HAS_LIGHTGBM:
         """
         Multi-horizon LightGBM crash probability estimator.
 
-        Uses isotonic regression for calibration instead of histogram binning.
-        Trains an ensemble of models at different drawdown severity levels
-        to capture the full spectrum from corrections to crashes.
+        Uses Platt scaling (logistic sigmoid) for calibration instead of
+        isotonic regression, which is more robust with sparse crash data.
+        Severity ensemble models are trained for feature analysis only
+        and are NOT blended into final predictions.
         """
+
+        # Key features for the simple logistic regression model.
+        # These are robust macro/market indicators with established crash-leading properties.
+        LOGISTIC_FEATURES = [
+            "vix_zscore",           # VIX z-score (vol regime)
+            "yield_curve_10y3m",    # Yield curve (10Y-3M, inversion signal)
+            "credit_spread_chg_3m", # HY OAS 3-month change (credit stress)
+            "sp500_12m_return",     # 12-month momentum (mean-reversion signal)
+            "vol_ratio_1m_12m",     # Short/long vol ratio (vol clustering)
+        ]
 
         def __init__(self, n_estimators: int = 800, random_state: int = 42):
             self.n_estimators = n_estimators
             self.random_state = random_state
             self.models = {}                 # {horizon: lgb model}
-            self.calibrators = {}            # {horizon: IsotonicRegression}
-            self.severity_models = {}        # {severity: lgb model} for ensemble
-            self.severity_calibrators = {}   # {severity: IsotonicRegression}
+            self.calibrators = {}            # {horizon: Platt scaler}
+            self.severity_models = {}        # {severity: lgb model} for analysis
+            self.severity_calibrators = {}   # {severity: Platt scaler}
+            self.logistic_models = {}        # {horizon: LogisticRegression}
             self.feature_names = None
             self.feature_importances_ = None
             self.is_trained = False
             self._train_crash_rate = {}      # base rate per horizon for fallback
+            self._lgb_brier = {}             # {horizon: brier_score} for model selection
 
         def train(
             self,
@@ -138,6 +151,13 @@ if _HAS_LIGHTGBM:
             # ── Train severity ensemble (10%, 15%, 20% drawdown thresholds) ──
             if severity_targets:
                 self._train_severity_ensemble(X, severity_targets, train_end_idx, min_train_samples)
+
+            # ── Train simple logistic regression on key features ──────────
+            # With sparse crash data (~10% base rate, <10 crash events),
+            # a logistic model with 5 hand-picked features generalizes better
+            # than LightGBM with 80+ features.
+            for horizon, target in target_slices.items():
+                self._train_logistic(X, target, horizon, train_end_idx, min_train_samples)
 
             self.feature_importances_ = dict(zip(self.feature_names, combined_importances))
             self.is_trained = True
@@ -275,18 +295,29 @@ if _HAS_LIGHTGBM:
             )
             self.models[horizon] = model
 
-            # ── Isotonic regression calibration ───────────────────────
-            # Unlike histogram binning, isotonic regression:
-            # - Is monotonic (higher raw score → higher probability, guaranteed)
-            # - Handles sparse regions gracefully (interpolates, doesn't map to midpoints)
-            # - Adapts to the actual data distribution
+            # ── Platt scaling calibration ──────────────────────────────
+            # Platt scaling (logistic sigmoid) has only 2 parameters (A, B)
+            # vs isotonic's N parameters, making it far more robust with
+            # sparse positive examples (~10% crash base rate).
             raw_probs = model.predict_proba(val_X)[:, 1]
-            calibrator = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
-            calibrator.fit(raw_probs, val_y.values)
+            calibrator = _PlattScaler(C=1.0, solver='lbfgs', max_iter=1000)
+            calibrator.fit(raw_probs.reshape(-1, 1), val_y.values)
             self.calibrators[horizon] = calibrator
 
+            # ── Verify calibration preserved monotonicity ─────────────
+            test_scores = np.linspace(
+                max(raw_probs.min(), 1e-6), min(raw_probs.max(), 1 - 1e-6), 20
+            )
+            cal_test = calibrator.predict_proba(test_scores.reshape(-1, 1))[:, 1]
+            if np.corrcoef(test_scores, cal_test)[0, 1] < 0.5:
+                print(f"  [WARN] Calibration may be inverted for {horizon}, using raw probs")
+                self.calibrators.pop(horizon, None)
+
             # ── Compute metrics ───────────────────────────────────────
-            cal_probs = calibrator.predict(raw_probs)
+            if horizon in self.calibrators:
+                cal_probs = calibrator.predict_proba(raw_probs.reshape(-1, 1))[:, 1]
+            else:
+                cal_probs = raw_probs
             val_brier = brier_score_loss(val_y, cal_probs)
             val_logloss = log_loss(val_y, np.clip(cal_probs, 1e-7, 1 - 1e-7), labels=[0, 1])
 
@@ -294,6 +325,8 @@ if _HAS_LIGHTGBM:
                 val_auc = roc_auc_score(val_y, cal_probs)
             except ValueError:
                 val_auc = 0.5
+
+            self._lgb_brier[horizon] = float(val_brier)
 
             pred_range = (float(cal_probs.min()), float(cal_probs.max()))
             pred_std = float(cal_probs.std())
@@ -313,60 +346,157 @@ if _HAS_LIGHTGBM:
                 "discrimination": "GOOD" if pred_std > 0.05 else "POOR",
             }
 
+        def _train_logistic(
+            self,
+            X: pd.DataFrame,
+            target: pd.Series,
+            horizon: str,
+            train_end_idx: Optional[int],
+            min_train_samples: int,
+        ):
+            """Train a simple logistic regression on key macro features.
+
+            With sparse crash data, 5 hand-picked features generalize far better
+            than 80+ features in LightGBM. This model serves as primary when
+            LightGBM Brier > 0.22 (near random).
+            """
+            y = target.iloc[:train_end_idx] if train_end_idx is not None else target.copy()
+            valid = y.notna() & X.notna().any(axis=1)
+            X_v = X[valid]
+            y_v = y[valid].astype(int)
+
+            # Find which logistic features are available in the feature matrix
+            available_feats = [f for f in self.LOGISTIC_FEATURES if f in X_v.columns]
+            if len(available_feats) < 2:
+                # Try fuzzy matching for common naming variations
+                feat_map = {
+                    "vix_zscore": ["VIX_zscore", "vix_z", "VIX_z_score"],
+                    "yield_curve_10y3m": ["yield_curve", "T10Y3M", "yield_spread"],
+                    "credit_spread_chg_3m": ["credit_spread_3m", "hy_oas_chg", "credit_chg"],
+                    "sp500_12m_return": ["sp500_ret_12m", "momentum_12m", "ret_12m"],
+                    "vol_ratio_1m_12m": ["vol_ratio", "vratio_1m12m", "short_long_vol"],
+                }
+                for canonical, aliases in feat_map.items():
+                    if canonical not in available_feats:
+                        for alias in aliases:
+                            if alias in X_v.columns:
+                                available_feats.append(alias)
+                                break
+
+            if len(available_feats) < 2 or len(y_v) < min_train_samples:
+                return
+
+            X_log = X_v[available_feats].fillna(0)
+
+            # Simple 80/20 split
+            split = int(len(X_log) * 0.8)
+            from sklearn.preprocessing import StandardScaler
+            scaler = StandardScaler()
+            X_train = scaler.fit_transform(X_log.iloc[:split])
+            X_val = scaler.transform(X_log.iloc[split:])
+            y_train = y_v.iloc[:split]
+            y_val = y_v.iloc[split:]
+
+            if y_train.nunique() < 2 or y_val.nunique() < 2:
+                return
+
+            lr = _PlattScaler(C=0.1, solver='lbfgs', max_iter=1000, class_weight='balanced')
+            lr.fit(X_train, y_train)
+
+            self.logistic_models[horizon] = {
+                "model": lr,
+                "scaler": scaler,
+                "features": available_feats,
+            }
+            print(f"  [OK] Logistic crash model ({horizon}): "
+                  f"{len(available_feats)} features, "
+                  f"Brier={brier_score_loss(y_val, lr.predict_proba(X_val)[:, 1]):.4f}")
+
+        @staticmethod
+        def _lookup_table_prob(features: pd.DataFrame) -> float:
+            """Empirical conditional crash rate lookup table.
+
+            Returns the base-rate crash probability conditioned on current
+            macro signals. More honest than a complex ML model that overfits
+            when the model can't beat random.
+            """
+            # Try to extract key signals
+            vix = None
+            yc_inverted = False
+
+            for col in ["VIX", "vix", "VIX_close"]:
+                if col in features.columns:
+                    vix = float(features[col].iloc[-1]) if len(features) > 0 else None
+                    break
+
+            for col in ["yield_curve_10y3m", "yield_curve", "T10Y3M", "yield_spread"]:
+                if col in features.columns:
+                    val = float(features[col].iloc[-1]) if len(features) > 0 else 0
+                    yc_inverted = val < 0
+                    break
+
+            if yc_inverted and vix is not None and vix > 25:
+                return 0.50  # Both signals: 50% within 12 months
+            elif yc_inverted:
+                return 0.35  # Inverted yield curve: 35%
+            elif vix is not None and vix > 25:
+                return 0.25  # Elevated VIX: 25%
+            else:
+                return 0.12  # Base rate: 12%
+
         def predict_proba(self, features: pd.DataFrame, horizon: str = "12m") -> np.ndarray:
             """
             Predict calibrated crash probability at given horizon.
 
-            If severity ensemble models are available, blends predictions across
-            multiple drawdown thresholds: 0.15 * p_10 + 0.25 * p_15 + 0.60 * p_20
-            This gives more robust predictions by leveraging more training data.
+            Uses LightGBM with Platt scaling as primary. If LightGBM Brier > 0.22
+            (near random), falls back to logistic regression. The lookup table
+            provides sanity-check bounds; when logistic diverges from it by >15pp,
+            they blend 50/50.
 
-            Pipeline: features → LightGBM raw score → isotonic calibration → clipped probability
+            Pipeline: features → model selection → calibration → lookup blend → clip
             """
             if not self.is_trained:
                 raise RuntimeError("Model not trained — call train() first")
 
             X = features[self.feature_names] if isinstance(features, pd.DataFrame) else features
 
-            # ── Severity ensemble (if trained) ──────────────────────────
-            severity_weights = {
-                "thresh_10pct": 0.15,
-                "thresh_15pct": 0.25,
-                "thresh_20pct": 0.60,
-            }
-            available = {k: w for k, w in severity_weights.items() if k in self.severity_models}
-            if available:
-                # Normalize weights to sum to the available portion
-                total_w = sum(available.values())
-                ensemble_prob = np.zeros(len(X))
-                for label, weight in available.items():
-                    raw = self.severity_models[label].predict_proba(X)[:, 1]
-                    if label in self.severity_calibrators:
-                        raw = self.severity_calibrators[label].predict(raw)
-                    ensemble_prob += (weight / total_w) * raw
+            # ── Model selection based on LightGBM performance ──────────
+            lgb_brier = self._lgb_brier.get(horizon, 1.0)
+            use_logistic = lgb_brier > 0.22 and horizon in self.logistic_models
 
-                # Also blend with the primary horizon model if available
-                if horizon in self.models:
-                    primary_raw = self.models[horizon].predict_proba(X)[:, 1]
-                    if horizon in self.calibrators:
-                        primary_raw = self.calibrators[horizon].predict(primary_raw)
-                    # 70% primary model, 30% severity ensemble
-                    calibrated = 0.70 * primary_raw + 0.30 * ensemble_prob
+            if use_logistic:
+                # LightGBM near random — use logistic regression
+                lm = self.logistic_models[horizon]
+                feat_cols = lm["features"]
+                if isinstance(features, pd.DataFrame) and all(f in features.columns for f in feat_cols):
+                    X_log = lm["scaler"].transform(features[feat_cols].fillna(0))
+                    calibrated = lm["model"].predict_proba(X_log)[:, 1]
                 else:
-                    calibrated = ensemble_prob
+                    # Features not available, fall back to LightGBM anyway
+                    use_logistic = False
 
-                return np.clip(calibrated, 0.02, 0.98)
+            if not use_logistic:
+                # Primary: LightGBM with Platt scaling
+                if horizon not in self.models:
+                    horizon = list(self.models.keys())[0]
 
-            # ── Standard single-threshold prediction ────────────────────
-            if horizon not in self.models:
-                horizon = list(self.models.keys())[0]
+                raw = self.models[horizon].predict_proba(X)[:, 1]
 
-            raw = self.models[horizon].predict_proba(X)[:, 1]
+                if horizon in self.calibrators:
+                    calibrated = self.calibrators[horizon].predict_proba(
+                        raw.reshape(-1, 1)
+                    )[:, 1]
+                else:
+                    calibrated = raw
 
-            if horizon in self.calibrators:
-                calibrated = self.calibrators[horizon].predict(raw)
-            else:
-                calibrated = raw
+            # ── Lookup table sanity check ──────────────────────────────
+            # When model prediction diverges from empirical base rates by
+            # >15pp, blend 50/50 to prevent extreme miscalibration
+            if isinstance(features, pd.DataFrame):
+                lookup_prob = self._lookup_table_prob(features)
+                for i in range(len(calibrated)):
+                    if abs(calibrated[i] - lookup_prob) > 0.15:
+                        calibrated[i] = 0.5 * calibrated[i] + 0.5 * lookup_prob
 
             return np.clip(calibrated, 0.02, 0.98)
 

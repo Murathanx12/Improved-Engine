@@ -2,7 +2,7 @@
 Module 2: Market Regime Detection
 ==================================
 
-Classifies each trading day into Bull/Bear/Volatile using a rolling window
+Classifies each trading day into Bull/Neutral/Bear/Volatile using a rolling window
 of returns + volatility PLUS leading indicators (VIX, risk score) to detect
 regime transitions earlier than pure price-based classification.
 
@@ -23,7 +23,7 @@ from finpredict.config import config
 
 def detect_regimes(data: pd.DataFrame, window: int = 252) -> tuple[pd.Series, str]:
     """
-    Module 2 Entry Point: Classify each day into Bull/Bear/Volatile.
+    Module 2 Entry Point: Classify each day into Bull/Neutral/Bear/Volatile.
 
     Uses rolling returns + volatility with leading indicator overlays
     (VIX, risk score) for early transition detection.
@@ -60,12 +60,20 @@ def detect_regimes(data: pd.DataFrame, window: int = 252) -> tuple[pd.Series, st
         ann_vol = returns.loc[date_window].std() * np.sqrt(252)
 
         # Base classification (price-based)
+        # Added "Neutral" regime: non-negative returns with moderate vol
+        # that previously fell into the "Bear" catch-all. This prevents
+        # mislabeling normal consolidation periods as bear markets.
+        neutral_threshold = thresholds.get("neutral_return_threshold", 0.00)
         if ann_vol > thresholds["high_vol_threshold"]:
             base_regime = "Volatile"
         elif ann_ret > thresholds["bull_return_threshold"]:
             base_regime = "Bull"
-        else:
+        elif ann_ret > neutral_threshold:
+            base_regime = "Neutral"
+        elif ann_ret > -0.10:
             base_regime = "Bear"
+        else:
+            base_regime = "Volatile"
 
         # Leading indicator overlay: detect regime TRANSITIONS early
         vix_now = (
@@ -89,13 +97,13 @@ def detect_regimes(data: pd.DataFrame, window: int = 252) -> tuple[pd.Series, st
             if stress_signals >= 2:
                 base_regime = "Volatile"
 
-        # Override: Bear → Bull if stress signals are very low (recovery detection)
+        # Override: Bear → Neutral if stress signals are very low (recovery detection)
         elif base_regime == "Bear":
             if (vix_now is not None and vix_now < thresholds["vix_calm_threshold"]
                     and risk_now is not None
                     and risk_now < thresholds["risk_calm_threshold"]):
                 if ann_vol < 0.20:
-                    base_regime = "Bull"
+                    base_regime = "Neutral"
 
         regimes.iloc[i] = base_regime
 

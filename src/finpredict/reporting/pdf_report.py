@@ -128,9 +128,11 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     Annualized Return: {mc_results['annual_return_pct']:.1f}%<br/><br/>
 
     <b>RISK ASSESSMENT</b><br/>
-    1-Year Crash Probability: {mc_results['crash_prob_1y']:.1f}%<br/>
+    ML Model 12m Crash Probability: {mc_results.get('ml_crash_prob', 0) or 0:.1f}%<br/>
+    Monte Carlo 12m Crash Prob: {mc_results['crash_prob_1y']:.1f}% (conditioned on ML)<br/>
     5-Year Crash Probability: {mc_results['crash_prob_5y']:.1f}%<br/>
-    CVaR (95%): {mc_results['cvar_95_pct']:.1f}%<br/>
+    1Y CVaR (95%): {mc_results.get('cvar_95_1y_pct', mc_results['cvar_95_pct']):.1f}%<br/>
+    5Y CVaR (95%): {mc_results.get('cvar_95_5y_pct', mc_results['cvar_95_pct']):.1f}%<br/>
     Avg Max Drawdown: {mc_results['max_dd_pct']:.1f}%
     """
     story.append(Paragraph(exec_text, body_style))
@@ -297,7 +299,7 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     <b>Key Findings:</b><br/>
     12-month crash probability: {cp_1y:.1f}%<br/>
     5-year crash probability: {cp_5y:.1f}%<br/>
-    CVaR (95%): {mc_results['cvar_95_pct']:.1f}% (expected loss in worst 5% of scenarios)<br/>
+    1Y CVaR (95%): {mc_results.get('cvar_95_1y_pct', mc_results['cvar_95_pct']):.1f}% | 5Y CVaR (95%): {mc_results.get('cvar_95_5y_pct', mc_results['cvar_95_pct']):.1f}%<br/>
     Historical crash frequency: once every {1/crash_freq:.1f} years<br/><br/>
 
     <b>Interpretation:</b> A {cp_1y:.0f}% 1-year crash probability means that in roughly
