@@ -469,7 +469,7 @@ def _compute_metrics(bt, crash_model, return_model, ml_train_log):
     naive_mae = float(np.abs(bt["actual_return_12m"] - bt["actual_return_12m"].mean()).mean())
     skill = 1 - ml_return_mae / naive_mae if naive_mae > 0 else 0
 
-    return {
+    metrics = {
         "mape": mape,
         "coverage": coverage,
         "direction": direction,
@@ -489,3 +489,90 @@ def _compute_metrics(bt, crash_model, return_model, ml_train_log):
         "crash_pred_std": float(bt["ml_crash_12m"].std()),
         "return_pred_range": (float(bt["ml_return_12m"].min()), float(bt["ml_return_12m"].max())),
     }
+
+    # ── Advanced Validation Metrics ─────────────────────────────────
+    try:
+        from finpredict.evaluation.metrics import (
+            lead_time_accuracy,
+            false_alarm_rate,
+            missed_crash_rate,
+            directional_accuracy_vs_consensus,
+            signal_max_drawdown,
+        )
+
+        # Build crash_periods from backtest actual outcomes
+        crash_periods = _extract_crash_periods(bt)
+
+        advanced = {}
+        if not crash_periods.empty:
+            advanced["lead_time"] = lead_time_accuracy(bt, crash_periods)
+            advanced["missed_crash"] = missed_crash_rate(bt, crash_periods)
+
+        advanced["false_alarm"] = false_alarm_rate(bt)
+        advanced["signal_drawdown"] = signal_max_drawdown(bt)
+
+        consensus_ret = get_institutional_return()
+        advanced["directional_vs_consensus"] = directional_accuracy_vs_consensus(
+            bt, consensus_ret
+        )
+
+        metrics["advanced_metrics"] = advanced
+
+        # Print advanced metrics
+        print(f"\n  ═══ ADVANCED VALIDATION METRICS ═══")
+        if "lead_time" in advanced:
+            lt = advanced["lead_time"]
+            status = "OK" if lt["mean_lead_days"] > 30 else "WARN"
+            print(f"  Lead Time Accuracy:   {lt['mean_lead_days']:.0f} days avg "
+                  f"({lt['n_detected']}/{lt['n_crashes']} detected) [{status}]")
+        fa = advanced["false_alarm"]
+        fa_status = "OK" if fa["rate"] < 0.30 else "WARN"
+        print(f"  False Alarm Rate:     {fa['rate']*100:.0f}% "
+              f"({fa['n_false_alarms']}/{fa['n_alarms']} false) [{fa_status}]")
+        if "missed_crash" in advanced:
+            mc = advanced["missed_crash"]
+            mc_status = "OK" if mc["rate"] < 0.20 else "WARN"
+            print(f"  Missed Crash Rate:    {mc['rate']*100:.0f}% "
+                  f"({mc['n_missed']}/{mc['n_crashes']} missed) [{mc_status}]")
+        sd = advanced["signal_drawdown"]
+        sd_status = "OK" if sd["max_drawdown"] < 0.25 else "WARN"
+        print(f"  Signal Max Drawdown:  {sd['max_drawdown']*100:.1f}% [{sd_status}]")
+        dvc = advanced["directional_vs_consensus"]
+        dvc_status = "OK" if dvc["engine_correct_rate"] > 0.55 else "WARN"
+        print(f"  Dir. vs Consensus:    {dvc['engine_correct_rate']*100:.0f}% correct "
+              f"({dvc['n_engine_correct']}/{dvc['n_divergences']} divergences) [{dvc_status}]")
+
+    except Exception as e:
+        print(f"  [EVAL] Advanced metrics failed: {e}")
+
+    return metrics
+
+
+def _extract_crash_periods(bt: pd.DataFrame) -> pd.DataFrame:
+    """Extract crash periods from backtest results for metrics computation.
+
+    Identifies transitions where actual_crash_12m goes from False to True,
+    marking the start of crash episodes.
+    """
+    if "actual_crash_12m" not in bt.columns or "date" not in bt.columns:
+        return pd.DataFrame(columns=["start", "end"])
+
+    bt_sorted = bt.sort_values("date").copy()
+    crashes = []
+    in_crash = False
+    crash_start = None
+
+    for _, row in bt_sorted.iterrows():
+        is_crash = bool(row["actual_crash_12m"])
+        if is_crash and not in_crash:
+            crash_start = pd.Timestamp(row["date"])
+            in_crash = True
+        elif not is_crash and in_crash:
+            crashes.append({"start": crash_start, "end": pd.Timestamp(row["date"])})
+            in_crash = False
+
+    # Handle crash that extends to end of data
+    if in_crash and crash_start is not None:
+        crashes.append({"start": crash_start, "end": bt_sorted["date"].iloc[-1]})
+
+    return pd.DataFrame(crashes)

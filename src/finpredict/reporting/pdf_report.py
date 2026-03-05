@@ -65,7 +65,8 @@ from finpredict.utils.charts import (
 def generate_report(data, mc_results, bt_results, sector_results, stock_results,
                     current_price, regime, risk_score, crash_freq, output_path,
                     shap_contributions=None, counterfactual_results=None,
-                    stress_results=None, fred_data=None):
+                    stress_results=None, fred_data=None,
+                    regime_validation=None, external_validation=None):
     """
     MODULE 10 ENTRY POINT: Generate comprehensive PDF report.
     """
@@ -478,6 +479,156 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
             "<i>Source: Shiller/Yale, NBER. Recovery = calendar days from trough to prior peak.</i>",
             small_style,
         ))
+        story.append(PageBreak())
+
+    # ===== PAGE 6e: VALIDATION & CROSS-CHECK =====
+    if regime_validation is not None or external_validation is not None:
+        story.append(Paragraph("VALIDATION &amp; CROSS-CHECK", heading_style))
+        story.append(Paragraph(
+            "Every engine output is cross-checked against independent sources. "
+            "Divergences from consensus are flagged — not to override the engine, "
+            "but to ensure users know when they are acting against market consensus.",
+            body_style,
+        ))
+        story.append(Spacer(1, 8))
+
+        # Regime Confirmation Table
+        if regime_validation is not None:
+            story.append(Paragraph("<b>Regime Confirmation</b>", body_style))
+            story.append(Spacer(1, 4))
+
+            def _pass_fail(val):
+                return "PASS" if val else "FAIL"
+
+            regime_rows = [
+                ["200-day SMA", _pass_fail(regime_validation.price_confirmed),
+                 "Price below 200d MA confirms bearish structure" if regime_validation.price_confirmed
+                 else "Price above 200d MA — bear not confirmed by price"],
+                ["Market Breadth", _pass_fail(regime_validation.breadth_confirmed),
+                 "Majority of sectors declining" if regime_validation.breadth_confirmed
+                 else "Breadth divergence — insufficient sectors declining"],
+                ["Consensus", _pass_fail(regime_validation.consensus_aligned),
+                 "Institutional forecasts align" if regime_validation.consensus_aligned
+                 else "Institutional forecasts diverge from engine"],
+            ]
+            regime_table = make_table(
+                ["Check", "Status", "Detail"],
+                regime_rows,
+                col_widths=[1.2*inch, 0.8*inch, 4.5*inch],
+            )
+            story.append(regime_table)
+            story.append(Spacer(1, 4))
+
+            conf_color = {"HIGH": "#00CC00", "MEDIUM": "#FFAA00", "LOW": "#FF4444"}
+            color = conf_color.get(regime_validation.confidence, "#999999")
+            story.append(Paragraph(
+                f"<b>Regime:</b> {regime_validation.regime} — "
+                f"<font color='{color}'><b>{regime_validation.confidence} CONFIDENCE</b></font> "
+                f"({'CONFIRMED' if regime_validation.confirmed else 'UNCONFIRMED'})",
+                body_style,
+            ))
+            story.append(Spacer(1, 12))
+
+        # External Signals Dashboard
+        if external_validation is not None:
+            story.append(Paragraph("<b>External Signals Dashboard</b>", body_style))
+            story.append(Spacer(1, 4))
+
+            signal_rows = [
+                ["Leading Economic Index (LEI)", external_validation.lei_signal,
+                 "Consecutive declines precede recessions"],
+                ["SLOOS (Bank Lending)", external_validation.sloos_signal,
+                 "Tightening standards precede credit stress"],
+                ["Fed Funds Direction", external_validation.fed_signal,
+                 "Rate path signals monetary policy stance"],
+                ["Consumer Sentiment", external_validation.sentiment_signal,
+                 "Extreme fear is historically contrarian-bullish"],
+                ["IMF GDP Forecast", external_validation.imf_signal,
+                 "Global growth outlook"],
+            ]
+            signal_table = make_table(
+                ["Source", "Signal", "Interpretation"],
+                signal_rows,
+                col_widths=[2.0*inch, 1.2*inch, 3.3*inch],
+            )
+            story.append(signal_table)
+            story.append(Spacer(1, 8))
+
+            agreement_pct = external_validation.engine_agreement * 100
+            agr_color = "#00CC00" if agreement_pct >= 60 else "#FFAA00" if agreement_pct >= 40 else "#FF4444"
+            story.append(Paragraph(
+                f"<b>Engine-External Agreement:</b> "
+                f"<font color='{agr_color}'><b>{agreement_pct:.0f}%</b></font> | "
+                f"<b>Consensus Direction:</b> {external_validation.consensus_direction}",
+                body_style,
+            ))
+
+            if external_validation.divergence_alerts:
+                story.append(Spacer(1, 8))
+                story.append(Paragraph("<b>Divergence Alerts:</b>", body_style))
+                for alert in external_validation.divergence_alerts:
+                    story.append(Paragraph(
+                        f"<font color='#FF4444'>&#x26A0;</font> {alert}",
+                        body_style,
+                    ))
+
+        # Advanced Metrics (from backtest)
+        adv = bt_results.attrs.get("advanced_metrics") if len(bt_results) > 0 else None
+        if adv:
+            story.append(Spacer(1, 12))
+            story.append(Paragraph("<b>Advanced Validation Metrics</b>", body_style))
+            story.append(Spacer(1, 4))
+
+            metric_rows = []
+            if "lead_time" in adv:
+                lt = adv["lead_time"]
+                metric_rows.append([
+                    "Lead Time Accuracy",
+                    f"{lt['mean_lead_days']:.0f} days",
+                    "> 30 days",
+                    "OK" if lt['mean_lead_days'] > 30 else "WARN",
+                ])
+            if "false_alarm" in adv:
+                fa = adv["false_alarm"]
+                metric_rows.append([
+                    "False Alarm Rate",
+                    f"{fa['rate']*100:.0f}%",
+                    "< 30%",
+                    "OK" if fa['rate'] < 0.30 else "WARN",
+                ])
+            if "missed_crash" in adv:
+                mc = adv["missed_crash"]
+                metric_rows.append([
+                    "Missed Crash Rate",
+                    f"{mc['rate']*100:.0f}%",
+                    "< 20%",
+                    "OK" if mc['rate'] < 0.20 else "WARN",
+                ])
+            if "signal_drawdown" in adv:
+                sd = adv["signal_drawdown"]
+                metric_rows.append([
+                    "Signal Max Drawdown",
+                    f"{sd['max_drawdown']*100:.1f}%",
+                    "< 25%",
+                    "OK" if sd['max_drawdown'] < 0.25 else "WARN",
+                ])
+            if "directional_vs_consensus" in adv:
+                dvc = adv["directional_vs_consensus"]
+                metric_rows.append([
+                    "Dir. Accuracy vs Consensus",
+                    f"{dvc['engine_correct_rate']*100:.0f}%",
+                    "> 55%",
+                    "OK" if dvc['engine_correct_rate'] > 0.55 else "WARN",
+                ])
+
+            if metric_rows:
+                metrics_table = make_table(
+                    ["Metric", "Value", "Target", "Status"],
+                    metric_rows,
+                    col_widths=[2.2*inch, 1.2*inch, 1.2*inch, 0.8*inch],
+                )
+                story.append(metrics_table)
+
         story.append(PageBreak())
 
     # ===== PAGE 7: INSTITUTIONAL COMPARISON =====
