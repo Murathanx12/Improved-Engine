@@ -93,6 +93,13 @@ simulation:
   max_5y_return: 3.0                  # 300% cap (prevents runaway simulations)
   max_annual_volatility: 1.2          # 120% vol cap
 
+  # GARCH-derived simulation parameters (clip bounds)
+  garch_derived_params:
+    rho_leverage_min: -0.95             # Min leverage effect correlation
+    rho_leverage_max: -0.30             # Max leverage effect correlation
+    xi_min: 0.02                        # Min vol-of-vol coefficient
+    xi_max: 0.15                        # Max vol-of-vol coefficient
+
   # Valuation constraints
   valuation:
     long_run_real_return: 0.067       # ~6.7% real long-run equity return
@@ -246,7 +253,7 @@ stocks:
 reporting:
   output_dir: "reports"
   filename_template: "Market_Prediction_v{version}_Report.pdf"
-  version: "4.5"
+  version: "7.0"
 
   # Chart style
   chart_style: "dark_background"

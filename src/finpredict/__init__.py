@@ -1,12 +1,12 @@
 """
-Market Prediction Engine v4.5
+Market Prediction Engine v7.0
 ==============================
 
-Crash probability analysis and market projection engine using
-jump-diffusion Monte Carlo simulation with institutional anchoring.
+ML-first crash probability analysis and market projection engine using
+GJR-GARCH, HMM regimes, LightGBM, and ML-conditioned Monte Carlo simulation.
 
 Usage:
     python -m finpredict.main
 """
 
-__version__ = "4.5.0"
+__version__ = "7.0.0"

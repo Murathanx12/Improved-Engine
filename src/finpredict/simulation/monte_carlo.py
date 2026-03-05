@@ -93,8 +93,9 @@ def _generate_block_bootstrap_residuals(
         row_start = b * block_size
         row_end = min(row_start + block_size, days)
         actual_len = row_end - row_start
-        for sim in range(n_sims):
-            residuals[row_start:row_end, sim] = standardized[starts[b, sim]:starts[b, sim] + actual_len]
+        # Vectorized: gather all sims at once via advanced indexing
+        idx = starts[b, :, np.newaxis] + np.arange(actual_len)  # (n_sims, actual_len)
+        residuals[row_start:row_end, :] = standardized[idx].T
 
     return residuals
 
@@ -119,6 +120,9 @@ def simulate_paths(
     ml_return_p90: Optional[float] = None,       # ML 90th percentile return
     garch_vol: Optional[float] = None,           # GARCH conditional volatility
     garch_persistence: Optional[float] = None,   # GARCH alpha+beta (vol persistence)
+    # ── GARCH-DERIVED SIMULATION PARAMS ─────────────────────────
+    xi: Optional[float] = None,                    # Vol-of-vol coefficient (data-derived)
+    rho_leverage: Optional[float] = None,          # Leverage effect correlation (data-derived)
     # ── HMM REGIME INPUTS ────────────────────────────────────────
     hmm_state_means: Optional[np.ndarray] = None,   # [bull_mu, bear_mu, crisis_mu]
     hmm_regime_probs: Optional[np.ndarray] = None,   # [p_bull, p_bear, p_crisis]
@@ -127,6 +131,7 @@ def simulate_paths(
     historical_residuals: Optional[np.ndarray] = None,  # For block bootstrap
     # ── LEGACY (for backward compat) ──────────────────────────────
     start_regime: str = "Bull",  # Ignored in v7, kept for API compat
+    seed: Optional[int] = None,  # RNG seed for reproducibility
     **kwargs,
 ) -> np.ndarray:
     """
@@ -135,12 +140,16 @@ def simulate_paths(
     ALL drift/vol/jump parameters are derived from ML predictions and
     fitted models. Zero hardcoded regime parameters.
 
+    Args:
+        seed: Optional random seed for reproducibility. When provided,
+              creates a deterministic np.random.default_rng(seed).
+
     Returns:
         np.ndarray of shape (days+1, n_sims) with simulated prices
     """
     sim_cfg = config["simulation"]
     dt = 1.0 / sim_cfg["trading_days_per_year"]
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
 
     # ═══════════════════════════════════════════════════════════════
     # 1. DRIFT — from ML prediction (or historical fallback)
@@ -203,9 +212,12 @@ def simulate_paths(
     kappa_vol = max(0.5, (1 - persistence) * 252)  # annualized
 
     # Vol-of-vol: how much volatility itself fluctuates
-    # Empirically ~0.5-1.0 for equity indices (as a fraction of vol)
-    # We estimate from GARCH parameters
-    xi = 0.06  # Conservative vol-of-vol noise coefficient
+    # Estimated from GARCH conditional volatility (passed as parameter)
+    # Falls back to conservative default if not provided
+    garch_params = sim_cfg.get("garch_derived_params", {})
+    if xi is None:
+        xi = 0.06  # Fallback when GARCH-derived value not available
+    xi = float(xi)
 
     # ═══════════════════════════════════════════════════════════════
     # 3. JUMP PROCESS — from ML crash probability
@@ -270,7 +282,7 @@ def simulate_paths(
 
     # Initialize volatility paths (one per simulation)
     sigma_t = np.full(n_sims, base_vol)
-    fair_value = np.full(n_sims, start_price)
+    fair_value = np.full(n_sims, float(start_price))
 
     # Pre-generate random numbers for efficiency
     # Use block bootstrap if enabled and historical residuals are available
@@ -288,8 +300,10 @@ def simulate_paths(
 
     # ── Leverage effect: correlate vol innovations with price shocks ──
     # In real markets, negative returns increase volatility (Black's leverage effect)
-    # Empirical ρ ≈ -0.7 for equity indices
-    rho_leverage = -0.7
+    # Derived from GARCH gamma parameter (passed as parameter)
+    if rho_leverage is None:
+        rho_leverage = -0.7  # Fallback when GARCH-derived value not available
+    rho_leverage = float(rho_leverage)
     Z_vol = rho_leverage * Z_price + np.sqrt(1 - rho_leverage**2) * Z_vol_raw
 
     for t in range(days):
@@ -358,6 +372,9 @@ def run_monte_carlo(
     hmm_regime_probs: Optional[np.ndarray] = None,
     hmm_state_vols: Optional[np.ndarray] = None,
     historical_residuals: Optional[np.ndarray] = None,
+    seed: Optional[int] = None,
+    xi: Optional[float] = None,
+    rho_leverage: Optional[float] = None,
 ) -> dict:
     """
     Run full Monte Carlo simulation with scenario weighting.
@@ -365,6 +382,9 @@ def run_monte_carlo(
     Scenarios provide different VIEWS of the future. Each scenario adjusts
     drift and volatility. The ML predictions condition ALL scenarios —
     they shift the distribution center, while scenarios shift the spread.
+
+    Args:
+        seed: Optional random seed for reproducibility.
 
     Returns:
         dict with all simulation results and statistics
@@ -409,7 +429,7 @@ def run_monte_carlo(
     all_paths = None
     scenario_results = {}
 
-    for name, scfg in scenarios.items():
+    for i, (name, scfg) in enumerate(scenarios.items()):
         weight = scenario_weights[name]
         sims_for_scenario = max(1, int(n_sims * weight))
 
@@ -427,6 +447,11 @@ def run_monte_carlo(
             "crash_mult": scfg.get("crash_multiplier", 1.0),
         }
 
+        # Derive per-scenario seed from base seed for deterministic but distinct paths
+        scenario_seed = None
+        if seed is not None:
+            scenario_seed = seed + i
+
         paths = simulate_paths(
             current_price, historical_mu, historical_sigma, days,
             sims_for_scenario, crash_freq, risk_score, scenario_params,
@@ -440,6 +465,9 @@ def run_monte_carlo(
             hmm_regime_probs=hmm_regime_probs,
             hmm_state_vols=hmm_state_vols,
             historical_residuals=historical_residuals,
+            seed=scenario_seed,
+            xi=xi,
+            rho_leverage=rho_leverage,
         )
 
         scenario_results[name] = {

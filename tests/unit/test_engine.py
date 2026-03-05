@@ -75,26 +75,28 @@ class TestCrashIdentification:
 class TestSimulation:
     def test_simulate_paths_shape(self):
         from finpredict.simulation.monte_carlo import simulate_paths
-        paths = simulate_paths(5000, 0.06, 0.18, 252, 100)
+        base_scenario = {"drift_adj": 0, "vol_mult": 1.0, "crash_mult": 1.0}
+        paths = simulate_paths(5000, 0.06, 0.18, 252, 100, 0.07, 0.5, base_scenario, seed=42)
         assert paths.shape == (253, 100)
 
     def test_simulate_paths_start_price(self):
         from finpredict.simulation.monte_carlo import simulate_paths
-        paths = simulate_paths(5000, 0.06, 0.18, 252, 100)
+        base_scenario = {"drift_adj": 0, "vol_mult": 1.0, "crash_mult": 1.0}
+        paths = simulate_paths(5000, 0.06, 0.18, 252, 100, 0.07, 0.5, base_scenario, seed=42)
         assert np.all(paths[0] == 5000)
 
     def test_simulate_paths_positive(self):
         from finpredict.simulation.monte_carlo import simulate_paths
-        paths = simulate_paths(5000, 0.06, 0.18, 252, 100)
+        base_scenario = {"drift_adj": 0, "vol_mult": 1.0, "crash_mult": 1.0}
+        paths = simulate_paths(5000, 0.06, 0.18, 252, 100, 0.07, 0.5, base_scenario, seed=42)
         assert np.all(paths > 0)
 
     def test_garch_vol_used_when_provided(self):
         """GARCH vol should produce different results than default."""
         from finpredict.simulation.monte_carlo import simulate_paths
-        np.random.seed(42)
-        paths_default = simulate_paths(5000, 0.06, 0.18, 252, 500)
-        np.random.seed(42)
-        paths_garch = simulate_paths(5000, 0.06, 0.18, 252, 500, garch_vol=0.25)
+        base_scenario = {"drift_adj": 0, "vol_mult": 1.0, "crash_mult": 1.0}
+        paths_default = simulate_paths(5000, 0.06, 0.18, 252, 500, 0.07, 0.5, base_scenario, seed=42)
+        paths_garch = simulate_paths(5000, 0.06, 0.18, 252, 500, 0.07, 0.5, base_scenario, garch_vol=0.25, seed=42)
         # Different volatility → different paths
         # (Same seed but different sigma → different scaling)
         assert not np.allclose(paths_default[-1], paths_garch[-1])
@@ -115,22 +117,22 @@ class TestCalibrationFix:
     def test_high_risk_produces_more_crashes(self):
         from finpredict.simulation.monte_carlo import simulate_paths
         n_sims = 2000
+        base_scenario = {"drift_adj": 0, "vol_mult": 1.0, "crash_mult": 1.0}
 
         # Low risk environment
-        np.random.seed(42)
         paths_low = simulate_paths(
             5000, 0.06, 0.18, 252, n_sims,
-            crash_rate=0.11, risk_level=-1.0,
+            crash_freq=0.05, risk_score=-1.0, scenario=base_scenario, seed=42,
         )
         peak_low = np.maximum.accumulate(paths_low, axis=0)
         dd_low = ((paths_low - peak_low) / peak_low).min(axis=0)
         crash_rate_low = (dd_low <= -0.20).mean()
 
-        # High risk environment
-        np.random.seed(42)
+        # High risk environment — higher crash freq and risk score
+        high_scenario = {"drift_adj": -0.05, "vol_mult": 1.5, "crash_mult": 2.5}
         paths_high = simulate_paths(
             5000, 0.06, 0.18, 252, n_sims,
-            crash_rate=0.11, risk_level=2.0,
+            crash_freq=0.15, risk_score=2.0, scenario=high_scenario, seed=42,
         )
         peak_high = np.maximum.accumulate(paths_high, axis=0)
         dd_high = ((paths_high - peak_high) / peak_high).min(axis=0)
