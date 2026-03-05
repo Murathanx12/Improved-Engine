@@ -350,6 +350,52 @@ def main():
             print(f"  [OSINT] Intelligence layer error: {e} — continuing without")
 
         # ══════════════════════════════════════════════════════════
+        # 9c. VALIDATION LAYER (cross-check engine outputs)
+        # ══════════════════════════════════════════════════════════
+        regime_validation = None
+        external_validation = None
+        try:
+            print(f"\n[MODULE 6c] Running validation checks...")
+            from finpredict.validation import validate_regime, validate_external
+            from finpredict.data.alternative_fetchers import (
+                fetch_aaii_sentiment, fetch_naaim_exposure, fetch_imf_gdp_forecast,
+            )
+
+            regime_validation = validate_regime(data, current_regime, hmm_result)
+            print(f"  [VALIDATION] Regime: {regime_validation.regime} — "
+                  f"{'CONFIRMED' if regime_validation.confirmed else 'UNCONFIRMED'}")
+            print(f"  [VALIDATION] Confidence: {regime_validation.confidence}")
+            for note in regime_validation.notes:
+                print(f"    {note}")
+
+            # Fetch alternative data sources (each handles its own errors)
+            alt_data = {}
+            try:
+                alt_data["imf"] = fetch_imf_gdp_forecast()
+            except Exception:
+                alt_data["imf"] = None
+            try:
+                alt_data["aaii"] = fetch_aaii_sentiment()
+            except Exception:
+                alt_data["aaii"] = None
+            try:
+                alt_data["naaim"] = fetch_naaim_exposure()
+            except Exception:
+                alt_data["naaim"] = None
+
+            external_validation = validate_external(
+                fred_data, ml_crash_prob, current_regime, alt_data=alt_data,
+            )
+            print(f"  [VALIDATION] External agreement: "
+                  f"{external_validation.engine_agreement:.0%}")
+            print(f"  [VALIDATION] Consensus direction: "
+                  f"{external_validation.consensus_direction}")
+            for alert in external_validation.divergence_alerts:
+                print(f"    [DIVERGENCE] {alert}")
+        except Exception as e:
+            print(f"  [VALIDATION] Validation layer error: {e} — continuing without")
+
+        # ══════════════════════════════════════════════════════════
         # 10. ML-CONDITIONED MONTE CARLO (secondary)
         # ══════════════════════════════════════════════════════════
         print(f"\n[MODULE 7] Running ML-conditioned Monte Carlo...")
@@ -444,6 +490,8 @@ def main():
             counterfactual_results=counterfactual_results,
             stress_results=stress_results,
             fred_data=fred_data,
+            regime_validation=regime_validation,
+            external_validation=external_validation,
         )
 
         # ══════════════════════════════════════════════════════════

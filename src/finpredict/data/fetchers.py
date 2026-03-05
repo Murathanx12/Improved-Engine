@@ -129,6 +129,21 @@ def fetch_all_data() -> tuple[pd.DataFrame, dict[str, pd.Series]]:
     if gold is not None:
         data["Gold"] = gold
 
+    # ── Risk-Off Flow Assets ──────────────────────────────────────────────────────
+    # TLT (long bonds), UUP (dollar), GLD (gold) — simultaneous rise = flight-to-safety
+    if "tlt" in tickers:
+        tlt = fetch_safe(tickers["tlt"], "2002-07-26", end, "TLT (20Y Treasury)")
+        if tlt is not None:
+            data["TLT"] = tlt
+    if "uup" in tickers:
+        uup = fetch_safe(tickers["uup"], "2007-02-20", end, "UUP (Dollar ETF)")
+        if uup is not None:
+            data["UUP"] = uup
+    if "gld" in tickers:
+        gld = fetch_safe(tickers["gld"], "2004-11-18", end, "GLD (Gold ETF)")
+        if gld is not None:
+            data["GLD"] = gld
+
     # ── Breadth Indicators ───────────────────────────────────────────────────────
     nasdaq = fetch_safe(tickers["nasdaq"], "1971-02-05", end, "NASDAQ")
     if nasdaq is not None:

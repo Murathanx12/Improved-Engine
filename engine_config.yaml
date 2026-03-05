@@ -26,6 +26,19 @@ data:
     russell: "^RUT"                   # Russell 2000 Small Cap
     vix3m: "^VIX3M"                   # 90-day VIX (for term structure slope)
     skew: "^SKEW"                     # CBOE Tail Risk / SKEW Index
+    tlt: "TLT"                        # 20+ Year Treasury Bond ETF
+    uup: "UUP"                        # US Dollar Bull ETF (DXY proxy)
+    gld: "GLD"                        # Gold ETF (for risk-off flows)
+
+  # Mega-cap tickers for market concentration (HHI) calculation
+  mega_cap_tickers:
+    - AAPL
+    - MSFT
+    - NVDA
+    - AMZN
+    - GOOGL
+    - META
+    - TSLA
 
   # Sector ETFs (name → ticker)
   sectors:
@@ -56,6 +69,33 @@ data:
     ig_oas: BAMLC0A0CM               # Investment Grade OAS spread
     gpr_world: GPRH                   # Geopolitical Risk Index (threats)
     consumer_credit: TOTALSL          # Total consumer credit outstanding
+    tips_10y: DFII10                  # 10Y TIPS real yield (for ERP calculation)
+    margin_credit: BOGZ1FL663067003Q  # Security credit (margin debt proxy, quarterly)
+    mfg_employment: MANEMP            # Manufacturing employment (ISM PMI proxy)
+    industrial_prod: INDPRO           # Industrial production index
+    business_loans: BUSLOANS          # Commercial & industrial loans outstanding
+    lei: USSLIND                      # Conference Board Leading Economic Index
+    sloos_ci: DRTSCILM                # Senior Loan Officer Survey: C&I loan tightening
+    sloos_cc: DRTSCLCC                # Senior Loan Officer Survey: credit card tightening
+
+
+# ── VALIDATION SETTINGS ─────────────────────────────────────────────────────────
+validation:
+  regime_confirmation:
+    sma_period: 200                   # 200-day SMA for price confirmation
+    breadth_period: 21                # 21-day return for sector breadth
+    min_sectors_declining: 6          # Out of 11 sectors
+  external_sources:
+    lei_decline_warning: 3            # Consecutive monthly declines = warning
+    lei_decline_recession: 6          # Consecutive monthly declines = recession signal
+    sloos_tightening_threshold: 20    # Net % tightening = stress
+    sentiment_extreme_low: 60         # UMCSENT below this = extreme fear
+    imf_gdp_warning: 1.5             # GDP forecast below this = concern
+  metrics:
+    alarm_threshold: 0.60             # Crash prob above this = alarm
+    safe_threshold: 0.30              # Below this = "safe" call
+    lead_horizon_days: 63             # 3-month false alarm window
+    short_threshold: 0.50             # For signal max drawdown calc
 
 
 # ── SIMULATION SETTINGS ─────────────────────────────────────────────────────────────
