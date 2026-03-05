@@ -213,15 +213,14 @@ def simulate_paths(
     jump_cfg = sim_cfg["jump_diffusion"]
     t_df = jump_cfg["t_degrees_of_freedom"]
 
-    if ml_crash_prob is not None:
-        # ML crash probability directly informs jump intensity
-        # Higher crash prob → more frequent jumps
-        # Mapping: 10% prob → base rate, 50% prob → 3x base rate
-        # This is a learned relationship, not arbitrary
-        base_jump_rate = crash_freq  # Historical: ~0.07-0.11 per year
-        jump_rate = base_jump_rate * (0.5 + ml_crash_prob * 5.0)
-        # Floor and cap from data bounds
-        jump_rate = np.clip(jump_rate, 0.01, 0.25)  # 1-25% annual
+    if ml_crash_prob is not None and ml_crash_prob > 0.01:
+        # Empirically-grounded jump rate from crash probability.
+        # Using Poisson arrival: P(crash) ≈ 1 - exp(-jump_rate * horizon)
+        # Solving: jump_rate = -ln(1 - crash_prob) / horizon_years
+        # This ensures the fraction of paths experiencing a crash-level
+        # jump matches the ML-predicted crash probability.
+        jump_rate = -np.log(1 - min(ml_crash_prob, 0.95)) / 1.0  # 1-year horizon
+        jump_rate = np.clip(jump_rate, 0.01, 0.50)
     else:
         jump_rate = crash_freq * scenario.get("crash_mult", 1.0)
         jump_rate = np.clip(jump_rate, 0.02, 0.20)
@@ -244,11 +243,11 @@ def simulate_paths(
         fv_growth = annual_drift * dt
 
     # Mean reversion strength: how strongly prices are pulled back to fair value
-    # Calibrated from historical drawdown-recovery statistics
-    mr_strength_up = 0.08   # Annualized boost when below fair value (dip-buying)
-    mr_strength_down = 0.04  # Annualized drag when above fair value (profit-taking)
-    mr_threshold_low = 0.20  # Activate when 20% below fair value
-    mr_threshold_high = 0.30 # Activate when 30% above fair value
+    mr_cfg = sim_cfg.get("mean_reversion", {})
+    mr_strength_up = mr_cfg.get("strength_up", 0.08)
+    mr_strength_down = mr_cfg.get("strength_down", 0.04)
+    mr_threshold_low = mr_cfg.get("threshold_low", 0.20)
+    mr_threshold_high = mr_cfg.get("threshold_high", 0.30)
 
     # ═══════════════════════════════════════════════════════════════
     # 5. UNCERTAINTY SCALING — from ML quantile spread
@@ -358,6 +357,7 @@ def run_monte_carlo(
     hmm_state_means: Optional[np.ndarray] = None,
     hmm_regime_probs: Optional[np.ndarray] = None,
     hmm_state_vols: Optional[np.ndarray] = None,
+    historical_residuals: Optional[np.ndarray] = None,
 ) -> dict:
     """
     Run full Monte Carlo simulation with scenario weighting.
@@ -385,26 +385,25 @@ def run_monte_carlo(
     )
 
     # ── Use ML prediction as the base drift ───────────────────────
-    # If ML model is available, it overrides historical + institutional blend
-    if ml_predicted_return is not None:
-        base_annual_return = ml_predicted_return
-    else:
-        from finpredict.config import get_institutional_return
-        base_annual_return = get_institutional_return()
+    # If ML model is available, it overrides historical + institutional blend.
+    # Valuation penalty is applied directly to the base return so it
+    # actually affects drift (previously it was applied to historical_mu
+    # which was bypassed when ml_predicted_return was set).
+    from finpredict.config import get_institutional_return
+    inst_return = get_institutional_return()
 
-    # Add valuation penalty (data-driven from trend deviation or CAPE)
-    base_annual_return -= val_penalty
+    if ml_predicted_return is not None:
+        base_annual_return = ml_predicted_return - val_penalty
+    else:
+        base_annual_return = inst_return - val_penalty
 
     historical_mu = np.log(1 + base_annual_return)
     historical_sigma = garch_vol if garch_vol else 0.16
 
-    # ── Institutional consensus as scenario anchor ─────────────────
-    # Scenario drift_adj is computed relative to institutional consensus,
-    # NOT relative to ML return. This ensures ML prediction survives as
-    # the base drift, and scenarios tilt around it rather than replacing it.
-    from finpredict.config import get_institutional_return
-    inst_return = get_institutional_return()
-    inst_mu = np.log(1 + inst_return)
+    # Base drift for scenario drift_adj computation — use the val-adjusted
+    # ML return so that drift_adj = scenario_return - base gives each
+    # scenario its stated return exactly.
+    base_mu = np.log(1 + base_annual_return)
 
     # ── Run scenario-weighted simulation ──────────────────────────
     all_paths = None
@@ -415,10 +414,12 @@ def run_monte_carlo(
         sims_for_scenario = max(1, int(n_sims * weight))
 
         # Build scenario-specific adjustments
-        # drift_adj = how much this scenario deviates from institutional consensus
-        # ML return remains as the base drift inside simulate_paths()
+        # drift_adj = how much this scenario deviates from the base drift.
+        # Since simulate_paths uses base_annual_return as the drift center,
+        # drift_adj is computed relative to it so each scenario produces
+        # its stated absolute return: drift = base + (scenario - base) = scenario
         scenario_return = scfg.get("return", inst_return)
-        drift_adj = np.log(1 + scenario_return) - inst_mu  # Tilt from consensus
+        drift_adj = np.log(1 + scenario_return) - base_mu
 
         scenario_params = {
             "drift_adj": drift_adj,
@@ -430,7 +431,7 @@ def run_monte_carlo(
             current_price, historical_mu, historical_sigma, days,
             sims_for_scenario, crash_freq, risk_score, scenario_params,
             ml_crash_prob=ml_crash_prob,
-            ml_predicted_return=ml_predicted_return,
+            ml_predicted_return=base_annual_return,
             ml_return_p10=ml_return_p10,
             ml_return_p90=ml_return_p90,
             garch_vol=garch_vol,
@@ -438,6 +439,7 @@ def run_monte_carlo(
             hmm_state_means=hmm_state_means,
             hmm_regime_probs=hmm_regime_probs,
             hmm_state_vols=hmm_state_vols,
+            historical_residuals=historical_residuals,
         )
 
         scenario_results[name] = {
@@ -466,11 +468,19 @@ def run_monte_carlo(
     # Full-period crash
     crash_full = float((sim_dd.min(axis=0) <= crash_threshold).mean()) * 100
 
-    # CVaR (expected loss in worst 5%)
+    # CVaR (expected loss in worst 5%) — both 1Y and 5Y horizons
     returns_full = final / current_price - 1
     sorted_returns = np.sort(returns_full)
     n_tail = max(1, int(len(sorted_returns) * 0.05))
-    cvar_95 = float(sorted_returns[:n_tail].mean()) * 100
+    cvar_95_5y = float(sorted_returns[:n_tail].mean()) * 100
+
+    # 1-year CVaR (matches the crash probability horizon)
+    yr1_idx = min(252, all_paths.shape[0] - 1)
+    yr1_final = all_paths[yr1_idx]
+    yr1_returns = yr1_final / current_price - 1
+    yr1_sorted = np.sort(yr1_returns)
+    yr1_n_tail = max(1, int(len(yr1_sorted) * 0.05))
+    cvar_95_1y = float(yr1_sorted[:yr1_n_tail].mean()) * 100
 
     # Max drawdown: average per-path max drawdown (for reporting)
     per_path_max_dd = sim_dd.min(axis=0)
@@ -544,7 +554,9 @@ def run_monte_carlo(
         "crash_prob_1y": crash_1y,
         "crash_prob_5y": crash_full,
         "crash_probs": crash_probs,
-        "cvar_95_pct": cvar_95,
+        "cvar_95_pct": cvar_95_5y,
+        "cvar_95_1y_pct": cvar_95_1y,
+        "cvar_95_5y_pct": cvar_95_5y,
         "max_dd_pct": max_dd,
         "max_drawdown_pct": abs(max_dd),
         # Scenario breakdown

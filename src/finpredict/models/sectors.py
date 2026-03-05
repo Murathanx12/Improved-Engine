@@ -229,4 +229,49 @@ def analyze_sectors(
         print(f"  [OK] {name}: {sim_total_return*100:+.1f}% expected "
               f"(β={beta:.2f}, mom={rel_strength_6m*100:+.1f}%, σ={sigma*100:.0f}%)")
 
+    # ── Normalize so cap-weighted sector returns ≈ index return ────
+    # Without this, all sectors can simultaneously beat the index,
+    # which violates basic arithmetic (the index IS the weighted avg).
+    if results:
+        years = forecast_days / 252
+        index_total = (1 + market_annual_return) ** years - 1
+        _normalize_to_index(results, index_total * 100)
+        print(f"  [NORM] Sector returns normalized to index "
+              f"({index_total*100:.1f}% total)")
+
     return results
+
+
+# Approximate S&P 500 sector weights (names match engine_config.yaml)
+_SECTOR_WEIGHTS = {
+    'Technology': 0.32, 'Healthcare': 0.12, 'Financials': 0.13,
+    'Consumer Disc.': 0.10, 'Industrials': 0.09,
+    'Communications': 0.09, 'Consumer Staples': 0.06,
+    'Energy': 0.03, 'Utilities': 0.02, 'Real Estate': 0.02,
+    'Materials': 0.02,
+}
+
+
+def _normalize_to_index(sector_results: dict, index_return_pct: float):
+    """Ensure cap-weighted sector returns average to index return.
+
+    Subtracts the gap between the weighted average of sector projections
+    and the index return from each sector's projection.
+    """
+    default_w = 1.0 / max(len(sector_results), 1)
+    total_w = sum(_SECTOR_WEIGHTS.get(s, default_w) for s in sector_results)
+    if total_w == 0:
+        return
+
+    weighted_avg = sum(
+        _SECTOR_WEIGHTS.get(s, default_w) * r['sim_total_return']
+        for s, r in sector_results.items()
+    ) / total_w
+
+    gap = weighted_avg - index_return_pct
+    if np.isnan(weighted_avg) or np.isnan(gap):
+        print("  [WARN] NaN in sector normalization; skipping")
+        return
+    for r in sector_results.values():
+        r['sim_total_return'] -= gap
+        r['expected_total'] -= gap

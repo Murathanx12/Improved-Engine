@@ -79,8 +79,15 @@ simulation:
   hmm_vol_blend: 0.15                # 0-1: fraction of vol from HMM regime
 
   # Block bootstrap (preserves volatility clustering in simulation)
-  use_block_bootstrap: false          # Enable block bootstrap for MC noise
+  use_block_bootstrap: true           # Enable block bootstrap for MC noise
   block_bootstrap_size: 21            # Block size in trading days (~1 month)
+
+  # Mean reversion parameters (previously hardcoded)
+  mean_reversion:
+    strength_up: 0.08                # Annualized boost when below fair value
+    strength_down: 0.04              # Annualized drag when above fair value
+    threshold_low: 0.20              # Activate when 20% below fair value
+    threshold_high: 0.30             # Activate when 30% above fair value
 
   # Return constraints
   max_5y_return: 3.0                  # 300% cap (prevents runaway simulations)
@@ -126,7 +133,9 @@ risk:
   # Regime detection thresholds
   regimes:
     high_vol_threshold: 0.30          # Annual vol above this = "Volatile"
-    bull_return_threshold: 0.05       # Annual return above this = "Bull"
+    bull_return_threshold: 0.08       # Annual return above this = "Bull"
+    neutral_return_threshold: 0.00    # Annual return above this (but below bull) = "Neutral"
+    bear_return_threshold: -0.10      # Annual return above this (but below neutral) = "Bear"
     vix_stress_threshold: 25          # VIX above this = stress signal
     risk_stress_threshold: 1.5        # Risk score above this = stress signal
     vix_calm_threshold: 16            # VIX below this in Bear = recovery

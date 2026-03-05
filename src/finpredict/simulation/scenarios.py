@@ -68,7 +68,10 @@ def _adjust_probabilities(
     recession_prob: float | None = None,
 ) -> dict:
     """
-    Adjust scenario probabilities based on current market conditions.
+    DEPRECATED: Scenario weight adjustment is now consolidated in
+    monte_carlo.py:_adjust_scenario_weights() which uses ML + macro signals.
+    This function is retained for backward compatibility with build_scenarios()
+    but is NOT used in the main simulation pipeline.
 
     Groups scenarios by their 'category' field (bullish/neutral/bearish)
     and shifts probability mass based on regime, risk, VIX, yield curve,
@@ -133,6 +136,9 @@ def _adjust_probabilities(
             s[name]["probability"] *= 1.15
         if "Base Case" in s:
             s["Base Case"]["probability"] *= 1.1
+    elif regime_lower == "neutral":
+        # Neutral regime: no strong adjustments
+        pass
     elif regime_lower in ("bear", "crisis"):
         for name in bearish:
             s[name]["probability"] *= 1.2
