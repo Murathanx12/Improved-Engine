@@ -147,11 +147,11 @@ if _HAS_XGBOOST:
                 reg_lambda=0.5,
                 scale_pos_weight=scale_pos,
                 random_state=self.random_state,
-                use_label_encoder=False,
                 eval_metric="logloss",
                 verbosity=0,
                 n_jobs=-1,
                 tree_method="hist",
+                early_stopping_rounds=100,
             )
             model.fit(
                 train_X, train_y,

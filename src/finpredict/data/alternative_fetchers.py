@@ -33,6 +33,7 @@ Usage:
 import io
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 
@@ -216,6 +217,78 @@ def fetch_imf_gdp_forecast(country: str = "USA") -> Optional[dict]:
         return None
     except Exception as e:
         print(f"  [WARN] IMF GDP forecast fetch failed: {e}")
+        return None
+
+
+def fetch_fed_funds_futures() -> Optional[dict]:
+    """Fetch Fed Funds Futures implied probabilities.
+
+    Uses yfinance to fetch ZQ (30-Day Fed Funds Futures) contracts
+    for the next 3 months to estimate market-implied rate expectations.
+
+    Returns:
+        dict with:
+            - implied_rate_1m: Implied fed funds rate 1 month out
+            - implied_rate_3m: Implied fed funds rate 3 months out
+            - rate_cut_probability: Implied probability of rate cut in 3 months
+            - direction: "CUT_EXPECTED" / "HOLD" / "HIKE_EXPECTED"
+        or None on failure.
+    """
+    try:
+        import yfinance as yf
+        from datetime import datetime, timedelta
+
+        # Current effective fed funds rate proxy from FRED
+        # Use 3-month T-Bill as fed funds proxy (publicly available)
+        irx = yf.download("^IRX", period="5d", progress=False)
+        if irx.empty:
+            return None
+
+        if isinstance(irx.columns, pd.MultiIndex):
+            current_rate = float(irx["Close"].iloc[:, 0].dropna().iloc[-1]) / 100
+        else:
+            current_rate = float(irx["Close"].dropna().iloc[-1]) / 100
+
+        # Fetch 2-year Treasury for longer-term rate expectations
+        tnx = yf.download("^TNX", period="5d", progress=False)
+        twoyr = yf.download("2YY=F", period="5d", progress=False)
+
+        implied_3m = current_rate  # Best available free proxy
+        if not twoyr.empty:
+            if isinstance(twoyr.columns, pd.MultiIndex):
+                implied_3m = float(twoyr["Close"].iloc[:, 0].dropna().iloc[-1]) / 100
+            else:
+                implied_3m = float(twoyr["Close"].dropna().iloc[-1]) / 100
+
+        # Rate change expectation
+        rate_change = implied_3m - current_rate
+
+        if rate_change < -0.25:
+            direction = "CUT_EXPECTED"
+            cut_prob = min(0.95, 0.5 + abs(rate_change) * 2)
+        elif rate_change > 0.25:
+            direction = "HIKE_EXPECTED"
+            cut_prob = max(0.05, 0.5 - rate_change * 2)
+        else:
+            direction = "HOLD"
+            cut_prob = 0.5 + rate_change * 2  # Slight lean
+
+        result = {
+            "current_rate": float(current_rate),
+            "implied_rate_3m": float(implied_3m),
+            "rate_change_expected": float(rate_change),
+            "rate_cut_probability": float(np.clip(cut_prob, 0.05, 0.95)),
+            "direction": direction,
+        }
+        print(f"  [OK] Fed Futures: current={current_rate:.2%}, "
+              f"3m_implied={implied_3m:.2%}, direction={direction}")
+        return result
+
+    except ImportError:
+        print("  [WARN] yfinance not available — skipping Fed futures")
+        return None
+    except Exception as e:
+        print(f"  [WARN] Fed futures fetch failed: {e}")
         return None
 
 

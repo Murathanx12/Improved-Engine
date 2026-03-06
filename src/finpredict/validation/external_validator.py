@@ -36,6 +36,7 @@ class ExternalValidation:
     fed_signal: str = "UNKNOWN"          # "HAWKISH" / "NEUTRAL" / "DOVISH"
     sentiment_signal: str = "UNKNOWN"    # "EXTREME_FEAR" / "FEAR" / "NEUTRAL" / "GREED"
     imf_signal: str = "UNKNOWN"          # "GROWTH" / "SLOWDOWN" / "CONTRACTION"
+    fed_futures_signal: str = "UNKNOWN"  # "CUT_EXPECTED" / "HOLD" / "HIKE_EXPECTED"
     consensus_direction: str = "UNKNOWN" # "BULLISH" / "NEUTRAL" / "BEARISH"
     engine_agreement: float = 0.0        # 0-1: fraction of signals that agree
     divergence_alerts: list = field(default_factory=list)
@@ -146,6 +147,27 @@ def validate_external(
                 "IMF projects GDP contraction — engine may be too optimistic"
             )
 
+    # ── 6. Fed Funds Futures (market-implied rate expectations) ────
+    fed_futures_data = alt_data.get("fed_futures")
+    if fed_futures_data:
+        result.fed_futures_signal = fed_futures_data.get("direction", "UNKNOWN")
+        signals_total += 1
+        # Rate cuts expected = dovish = near-term bullish for equities
+        # Rate hikes expected = hawkish = headwind for equities
+        futures_bearish = result.fed_futures_signal == "HIKE_EXPECTED"
+        if futures_bearish == is_engine_bearish:
+            signals_agree += 1
+        elif result.fed_futures_signal == "CUT_EXPECTED" and is_engine_bearish:
+            result.divergence_alerts.append(
+                f"Fed futures imply rate CUTS (prob={fed_futures_data.get('rate_cut_probability', 0):.0%}) — "
+                "monetary easing expected, may conflict with bearish call"
+            )
+        elif result.fed_futures_signal == "HIKE_EXPECTED" and not is_engine_bearish:
+            result.divergence_alerts.append(
+                "Fed futures imply rate HIKES — "
+                "monetary tightening expected, engine may be too optimistic"
+            )
+
     # ── Compute Agreement Score ────────────────────────────────────
     if signals_total > 0:
         result.engine_agreement = signals_agree / signals_total
@@ -159,8 +181,9 @@ def validate_external(
         result.fed_signal == "HAWKISH",
         result.sentiment_signal in ("NEUTRAL", "GREED"),  # Not fearful = complacent
         result.imf_signal in ("SLOWDOWN", "CONTRACTION"),
+        result.fed_futures_signal == "HIKE_EXPECTED",
     ] if s)
-    if bearish_count >= 3:
+    if bearish_count >= 4:
         result.consensus_direction = "BEARISH"
     elif bearish_count <= 1:
         result.consensus_direction = "BULLISH"

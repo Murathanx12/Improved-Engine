@@ -558,6 +558,46 @@ if _HAS_TORCH:
             ensemble = np.mean(preds, axis=0)
             return np.clip(ensemble, 0.02, 0.98)
 
+        def predict_individual(self, features: pd.DataFrame, horizon: str = "12m") -> dict:
+            """Predict crash probability from each model individually.
+
+            Returns:
+                Dict with keys "lstm" and "tcn", each containing an np.ndarray.
+                Useful for the meta-stacker which needs independent model signals.
+            """
+            if not self.is_trained:
+                raise RuntimeError("TemporalEnsemble not trained")
+
+            if horizon not in self._horizons:
+                horizon = self._horizons[-1]
+            h_idx = self._horizons.index(horizon)
+
+            X = features[self.feature_names].values if isinstance(features, pd.DataFrame) else features
+            X_norm = (X.astype(np.float32) - self._train_mean) / self._train_std
+            X_norm = np.nan_to_num(X_norm, nan=0.0, posinf=0.0, neginf=0.0)
+
+            if len(X_norm) < self.WINDOW_SIZE:
+                pad = np.zeros((self.WINDOW_SIZE - len(X_norm), X_norm.shape[1]), dtype=np.float32)
+                X_norm = np.vstack([pad, X_norm])
+
+            n_sequences = len(X_norm) - self.WINDOW_SIZE + 1
+            sequences = np.stack([
+                X_norm[i: i + self.WINDOW_SIZE] for i in range(n_sequences)
+            ])
+            x_tensor = torch.from_numpy(sequences).to(self._device)
+
+            result = {}
+            for name, model in [("lstm", self.lstm_model), ("tcn", self.tcn_model)]:
+                if model is not None:
+                    model.eval()
+                    with torch.no_grad():
+                        out = model(x_tensor)
+                        result[name] = np.clip(out[:, h_idx].cpu().numpy(), 0.02, 0.98)
+                else:
+                    result[name] = np.full(n_sequences, 0.12)
+
+            return result
+
         def predict_all_horizons(self, features: pd.DataFrame) -> dict:
             """Predict crash probability at all trained horizons."""
             if not self.is_trained:
