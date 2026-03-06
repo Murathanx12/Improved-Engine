@@ -19,6 +19,8 @@ reportlab>=4.0
 requests>=2.31
 fear-and-greed>=0.0.4
 pyarrow>=14.0
+torch>=2.0
+xgboost>=2.0
 
 # Dev dependencies
 pytest>=7.4

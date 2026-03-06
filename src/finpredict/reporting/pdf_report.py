@@ -66,7 +66,8 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
                     current_price, regime, risk_score, crash_freq, output_path,
                     shap_contributions=None, counterfactual_results=None,
                     stress_results=None, fred_data=None,
-                    regime_validation=None, external_validation=None):
+                    regime_validation=None, external_validation=None,
+                    crash_timing_results=None):
     """
     MODULE 10 ENTRY POINT: Generate comprehensive PDF report.
     """
@@ -311,6 +312,23 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     story.append(Paragraph(crash_text, body_style))
     story.append(Spacer(1, 0.1*inch))
     story.append(fig_to_image(chart_crash_probability(mc_results), height=3.2*inch))
+
+    # ── Crash Timing Distribution (3-month windows) ──
+    if crash_timing_results:
+        story.append(Spacer(1, 0.2*inch))
+        story.append(Paragraph("<b>Crash Timing — 3-Month Window Distribution</b>", styles['Heading3']))
+        story.append(Paragraph(
+            "Which 3-month window has the highest crash probability? "
+            "The crash timing model distributes the 12-month crash probability "
+            "across quarterly windows to provide actionable timing precision.",
+            body_style,
+        ))
+        try:
+            fig = _chart_crash_timing(crash_timing_results)
+            story.append(fig_to_image(fig, height=2.5*inch))
+        except Exception as e:
+            story.append(Paragraph(f"[Crash timing chart error: {e}]", body_style))
+
     story.append(PageBreak())
 
     # ===== PAGE 6: RISK ASSESSMENT =====
@@ -825,5 +843,51 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     doc.build(story)
     print(f"  [OK] Report saved: {output_path}\n")
 
+
+def _chart_crash_timing(crash_timing_results):
+    """Generate bar chart for crash timing 3-month window distribution."""
+    import matplotlib.pyplot as plt
+    import matplotlib
+
+    matplotlib.use("Agg")
+
+    labels = ["Q1\n0-3m", "Q2\n3-6m", "Q3\n6-9m", "Q4\n9-12m", "Beyond\n12m"]
+    keys = ["Q1_0_3m", "Q2_3_6m", "Q3_6_9m", "Q4_9_12m", "beyond_12m"]
+    probs = [crash_timing_results.get(k, 0) for k in keys]
+
+    # Color coding: RED (>40%), AMBER (25-40%), GREEN (<25%)
+    colors = []
+    for p in probs:
+        if p > 0.40:
+            colors.append("#E74C3C")  # Red
+        elif p > 0.25:
+            colors.append("#F39C12")  # Amber
+        else:
+            colors.append("#27AE60")  # Green
+
+    fig, ax = plt.subplots(figsize=(7, 2.5))
+    bars = ax.bar(labels, [p * 100 for p in probs], color=colors, edgecolor="white", width=0.6)
+
+    # Add value labels on bars
+    for bar, p in zip(bars, probs):
+        if p > 0.02:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                    f"{p*100:.1f}%", ha="center", va="bottom", fontsize=9, fontweight="bold")
+
+    ax.set_ylabel("Crash Probability (%)", fontsize=9)
+    ax.set_title("Crash Probability by 3-Month Window", fontsize=11, fontweight="bold")
+    ax.set_ylim(0, max(p * 100 for p in probs) * 1.3 + 5)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(axis="y", alpha=0.3)
+
+    # Highlight most likely crash window
+    max_idx = probs[:4].index(max(probs[:4]))  # Exclude "beyond"
+    if probs[max_idx] > 0.10:
+        bars[max_idx].set_edgecolor("#2C3E50")
+        bars[max_idx].set_linewidth(2)
+
+    fig.tight_layout()
+    return fig
 
 

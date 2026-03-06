@@ -44,6 +44,10 @@ from finpredict.ml.features import (
 )
 from finpredict.ml.crash_model import CrashPredictor
 from finpredict.ml.return_model import ReturnPredictor
+from finpredict.ml.xgboost_model import XGBoostCrashPredictor
+from finpredict.ml.sequence_model import TemporalEnsemble
+from finpredict.ml.meta_stacker import MetaStacker
+from finpredict.ml.crash_timing import CrashTimingClassifier
 
 
 def run_backtest(
@@ -98,10 +102,20 @@ def run_backtest(
     # ── Initialize ML models ──────────────────────────────────────
     crash_model = CrashPredictor(n_estimators=800)
     return_model = ReturnPredictor(n_estimators=600)
+    xgb_model = XGBoostCrashPredictor(n_estimators=800)
+    temporal_model = TemporalEnsemble(hidden_dim=128)
+    meta_stacker = MetaStacker()
+    crash_timing = CrashTimingClassifier()
 
     last_train_idx = -9999
     retrain_interval = 63         # Retrain every ~3 months (was 126 in v6)
     min_train_samples = 1260      # Need 5+ years of data
+
+    # Collectors for meta-stacker OOS predictions
+    oos_predictions = {"lgb": {}, "xgb": {}, "lstm": {}, "tcn": {}}
+    oos_regime_probs = []
+    oos_targets = {}
+    oos_indices = []
 
     results = []
     ml_train_log = []
@@ -126,6 +140,39 @@ def run_backtest(
                 min_train_samples=min_train_samples,
             )
 
+            # Train XGBoost peer model
+            xgb_result = xgb_model.train(
+                features, crash_targets,
+                train_end_idx=idx,
+                min_train_samples=min_train_samples,
+            )
+
+            # Train LSTM + TCN temporal ensemble
+            temporal_result = temporal_model.train(
+                features, crash_targets,
+                train_end_idx=idx,
+                min_sequences=400,
+            )
+
+            # Train crash timing classifier
+            timing_result = crash_timing.train(
+                features, data,
+                train_end_idx=idx,
+                min_train_samples=min_train_samples,
+            )
+
+            # Train meta-stacker on accumulated OOS predictions
+            if len(oos_indices) >= 20:
+                stacker_preds = {}
+                for model_name in ["lgb", "xgb", "lstm", "tcn"]:
+                    if oos_predictions[model_name]:
+                        stacker_preds[model_name] = {
+                            h: np.array(v) for h, v in oos_predictions[model_name].items()
+                        }
+                stacker_targets = {h: np.array(v) for h, v in oos_targets.items()}
+                rp_arr = np.array(oos_regime_probs) if oos_regime_probs else None
+                meta_stacker.train(stacker_preds, rp_arr, stacker_targets)
+
             if crash_result.get("success") and return_result.get("success"):
                 last_train_idx = idx
                 ml_train_log.append({
@@ -140,6 +187,8 @@ def run_backtest(
                     "return_pred_range": return_result.get("pred_range", (0, 0)),
                     "return_skill": return_result.get("skill_score", 0),
                     "return_quantile_cov": return_result.get("quantile_coverage", 0),
+                    "xgb_val_brier": xgb_result.get("val_brier", 0) if xgb_result.get("success") else None,
+                    "temporal_val_loss": temporal_result.get("lstm_val_loss", None) if temporal_result.get("success") else None,
                 })
 
         if not crash_model.is_trained or not return_model.is_trained:
@@ -148,11 +197,63 @@ def run_backtest(
         # ── Get ML predictions ────────────────────────────────────
         current_features = features.iloc[idx:idx+1]
         try:
-            ml_crash_12m = float(crash_model.predict_proba(current_features, "12m")[0])
-            ml_crash_6m = float(crash_model.predict_proba(current_features, "6m")[0]) \
+            # LightGBM predictions
+            lgb_crash_12m = float(crash_model.predict_proba(current_features, "12m")[0])
+            lgb_crash_6m = float(crash_model.predict_proba(current_features, "6m")[0]) \
                 if "6m" in crash_model.models else None
-            ml_crash_3m = float(crash_model.predict_proba(current_features, "3m")[0]) \
+            lgb_crash_3m = float(crash_model.predict_proba(current_features, "3m")[0]) \
                 if "3m" in crash_model.models else None
+
+            # XGBoost predictions
+            xgb_crash_12m = None
+            if xgb_model.is_trained:
+                xgb_crash_12m = float(xgb_model.predict_proba(current_features, "12m")[0])
+
+            # LSTM + TCN predictions
+            lstm_crash_12m = None
+            if temporal_model.is_trained:
+                # Need at least WINDOW_SIZE rows for a sequence
+                seq_start = max(0, idx - temporal_model.WINDOW_SIZE + 1)
+                seq_features = features.iloc[seq_start:idx+1]
+                if len(seq_features) >= temporal_model.WINDOW_SIZE:
+                    temporal_preds = temporal_model.predict_proba(seq_features, "12m")
+                    lstm_crash_12m = float(temporal_preds[-1])
+
+            # Collect OOS predictions for meta-stacker training
+            oos_indices.append(idx)
+            for h in ["3m", "6m", "12m"]:
+                if h not in oos_predictions["lgb"]:
+                    oos_predictions["lgb"][h] = []
+                    oos_predictions["xgb"][h] = []
+                    oos_predictions["lstm"][h] = []
+                    oos_predictions["tcn"][h] = []
+                    oos_targets[h] = []
+
+            oos_predictions["lgb"]["12m"].append(lgb_crash_12m)
+            oos_predictions["xgb"]["12m"].append(xgb_crash_12m if xgb_crash_12m is not None else 0.12)
+            oos_predictions["lstm"]["12m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
+            oos_predictions["tcn"]["12m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
+
+            # Meta-stacker ensemble prediction
+            if meta_stacker.is_trained:
+                model_preds = {
+                    "lgb": lgb_crash_12m,
+                    "xgb": xgb_crash_12m if xgb_crash_12m is not None else lgb_crash_12m,
+                    "lstm": lstm_crash_12m if lstm_crash_12m is not None else lgb_crash_12m,
+                    "tcn": lstm_crash_12m if lstm_crash_12m is not None else lgb_crash_12m,
+                }
+                ml_crash_12m = float(meta_stacker.predict_proba(model_preds, horizon="12m")[0])
+            else:
+                # Simple average before meta-stacker is trained
+                preds_to_avg = [lgb_crash_12m]
+                if xgb_crash_12m is not None:
+                    preds_to_avg.append(xgb_crash_12m)
+                if lstm_crash_12m is not None:
+                    preds_to_avg.append(lstm_crash_12m)
+                ml_crash_12m = float(np.mean(preds_to_avg))
+
+            ml_crash_6m = lgb_crash_6m
+            ml_crash_3m = lgb_crash_3m
 
             ml_return_12m = float(return_model.predict(current_features, "12m")[0])
             ml_return_6m = float(return_model.predict(current_features, "6m")[0]) \
@@ -213,6 +314,10 @@ def run_backtest(
         actual_crash_6m = _check_crash(idx, actual_idx_6m)
         actual_crash_3m = _check_crash(idx, actual_idx_3m)
 
+        # Collect OOS targets for meta-stacker training
+        if "12m" in oos_targets:
+            oos_targets["12m"].append(float(actual_crash_12m))
+
         # MC crash probability (secondary)
         sim_peak = np.maximum.accumulate(paths, axis=0)
         sim_dd = (paths - sim_peak) / sim_peak
@@ -231,10 +336,14 @@ def run_backtest(
             "pred_p05": pred_p05,
             "pct_error": pct_error,
             "within_bounds": within_bounds,
-            # ML crash predictions (PRIMARY)
+            # ML crash predictions (ENSEMBLE — PRIMARY)
             "ml_crash_12m": ml_crash_12m,
             "ml_crash_6m": ml_crash_6m,
             "ml_crash_3m": ml_crash_3m,
+            # Per-model crash predictions (for analysis)
+            "lgb_crash_12m": lgb_crash_12m,
+            "xgb_crash_12m": xgb_crash_12m,
+            "lstm_crash_12m": lstm_crash_12m,
             # ML return predictions (PRIMARY)
             "ml_return_12m": ml_return_12m,
             "ml_return_6m": ml_return_6m,
@@ -260,6 +369,12 @@ def run_backtest(
     if len(bt) > 0:
         _print_results(bt, crash_model, return_model, ml_train_log)
         bt.attrs.update(_compute_metrics(bt, crash_model, return_model, ml_train_log))
+
+        # Store all ensemble models for use by main pipeline
+        bt.attrs["xgb_model"] = xgb_model
+        bt.attrs["temporal_model"] = temporal_model
+        bt.attrs["meta_stacker"] = meta_stacker
+        bt.attrs["crash_timing"] = crash_timing
 
         # ── Evaluation module integration ─────────────────────────────
         try:

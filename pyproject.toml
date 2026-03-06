@@ -29,6 +29,8 @@ dependencies = [
     "requests>=2.31",
     "fear-and-greed>=0.0.4",
     "pyarrow>=14.0",
+    "torch>=2.0",
+    "xgboost>=2.0",
 ]
 
 [project.optional-dependencies]

@@ -4,4 +4,7 @@ This file makes `finpredict.ml` a proper package and can re-export
 symbols if desired. Kept minimal.
 """
 
-__all__ = ["features", "crash_model", "return_model"]
+__all__ = [
+    "features", "crash_model", "return_model",
+    "xgboost_model", "sequence_model", "meta_stacker", "crash_timing",
+]
