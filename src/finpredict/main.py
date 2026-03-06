@@ -49,6 +49,10 @@ from finpredict.ml.features import (
 )
 from finpredict.ml.crash_model import CrashPredictor
 from finpredict.ml.return_model import ReturnPredictor
+from finpredict.ml.xgboost_model import XGBoostCrashPredictor
+from finpredict.ml.sequence_model import TemporalEnsemble
+from finpredict.ml.meta_stacker import MetaStacker
+from finpredict.ml.crash_timing import CrashTimingClassifier
 from finpredict.intelligence import fetch_gdelt_data, compute_event_score
 from finpredict.intelligence.event_scorer import adjust_crash_probability
 
@@ -231,9 +235,14 @@ def main():
         ml_return_p90 = None
         shap_contributions = None
         counterfactual_results = None
+        crash_timing_results = None
 
         crash_model = bt_results.attrs.get("crash_model")
         return_model = bt_results.attrs.get("return_model")
+        xgb_model = bt_results.attrs.get("xgb_model")
+        temporal_model = bt_results.attrs.get("temporal_model")
+        meta_stacker = bt_results.attrs.get("meta_stacker")
+        crash_timing_model = bt_results.attrs.get("crash_timing")
 
         if (crash_model and crash_model.is_trained
                 and return_model and return_model.is_trained):
@@ -244,12 +253,53 @@ def main():
             shap_result = crash_model.predict_with_shap(
                 current_row, "12m", compute_shap=True,
             )
-            ml_crash_prob = float(shap_result["crash_prob"][0])
+            lgb_crash_12m = float(shap_result["crash_prob"][0])
             shap_values = shap_result.get("shap_values")
             if "6m" in crash_model.models:
                 ml_crash_6m = float(crash_model.predict_proba(current_row, "6m")[0])
             if "3m" in crash_model.models:
                 ml_crash_3m = float(crash_model.predict_proba(current_row, "3m")[0])
+
+            # XGBoost prediction
+            xgb_crash_12m = None
+            if xgb_model and xgb_model.is_trained:
+                xgb_crash_12m = float(xgb_model.predict_proba(current_row, "12m")[0])
+
+            # LSTM + TCN temporal prediction
+            lstm_crash_12m = None
+            if temporal_model and temporal_model.is_trained:
+                seq_start = max(0, len(current_features) - temporal_model.WINDOW_SIZE)
+                seq_features = current_features.iloc[seq_start:]
+                if len(seq_features) >= temporal_model.WINDOW_SIZE:
+                    temporal_preds = temporal_model.predict_proba(seq_features, "12m")
+                    lstm_crash_12m = float(temporal_preds[-1])
+
+            # Meta-stacker ensemble
+            if meta_stacker and meta_stacker.is_trained:
+                model_preds = {
+                    "lgb": lgb_crash_12m,
+                    "xgb": xgb_crash_12m if xgb_crash_12m is not None else lgb_crash_12m,
+                    "lstm": lstm_crash_12m if lstm_crash_12m is not None else lgb_crash_12m,
+                    "tcn": lstm_crash_12m if lstm_crash_12m is not None else lgb_crash_12m,
+                }
+                regime_probs_arr = hmm_result.regime_probs if hmm_result.success else None
+                ml_crash_prob = float(meta_stacker.predict_proba(
+                    model_preds, regime_probs_arr, horizon="12m",
+                )[0])
+            else:
+                # Simple average of available models
+                preds_to_avg = [lgb_crash_12m]
+                if xgb_crash_12m is not None:
+                    preds_to_avg.append(xgb_crash_12m)
+                if lstm_crash_12m is not None:
+                    preds_to_avg.append(lstm_crash_12m)
+                ml_crash_prob = float(np.mean(preds_to_avg))
+
+            # Crash timing — which 3-month window is highest risk
+            if crash_timing_model and crash_timing_model.is_trained:
+                crash_timing_results = crash_timing_model.predict_window(
+                    current_row, crash_prob_12m=ml_crash_prob,
+                )
 
             # Multi-horizon return predictions
             ml_predicted_return = float(return_model.predict(current_row, "12m")[0])
@@ -264,14 +314,42 @@ def main():
             ml_return_p90 = float(quantiles.get("p90", [ml_predicted_return + 0.15])[0])
 
             print(f"\n{'='*60}")
-            print(f"  ML PREDICTIONS — Current Market State")
+            print(f"  ML ENSEMBLE PREDICTIONS — Current Market State")
             print(f"{'='*60}")
             if ml_crash_3m is not None:
                 print(f"  3-Month Crash Prob:   {ml_crash_3m*100:.1f}%")
             if ml_crash_6m is not None:
                 print(f"  6-Month Crash Prob:   {ml_crash_6m*100:.1f}%")
-            print(f"  12-Month Crash Prob:  {ml_crash_prob*100:.1f}%")
+            print(f"  12-Month Crash Prob:  {ml_crash_prob*100:.1f}% (ensemble)")
             print()
+
+            # Per-model breakdown
+            print(f"  Per-Model 12M Crash:")
+            print(f"    LightGBM:           {lgb_crash_12m*100:.1f}%")
+            if xgb_crash_12m is not None:
+                print(f"    XGBoost:            {xgb_crash_12m*100:.1f}%")
+            if lstm_crash_12m is not None:
+                print(f"    LSTM+TCN:           {lstm_crash_12m*100:.1f}%")
+            if meta_stacker and meta_stacker.is_trained:
+                weights = meta_stacker.get_model_weights("12m")
+                if weights:
+                    print(f"    Meta-stacker weights: {', '.join(f'{k}={v:.2f}' for k, v in list(weights.items())[:4])}")
+            print()
+
+            # Crash timing
+            if crash_timing_results:
+                from finpredict.ml.crash_timing import WINDOWS
+                print(f"  Crash Timing (3-month windows):")
+                for w in WINDOWS:
+                    prob = crash_timing_results.get(w, 0)
+                    bar = "#" * int(prob * 40)
+                    label = w.replace("_", " ").replace("0 3m", "0-3m").replace("3 6m", "3-6m").replace("6 9m", "6-9m").replace("9 12m", "9-12m")
+                    print(f"    {label:14s} {prob*100:5.1f}%  {bar}")
+                best_window, best_prob = crash_timing_model.get_most_likely_window(crash_timing_results)
+                if best_prob > 0.10:
+                    print(f"    >> Highest crash risk: {best_window} ({best_prob*100:.1f}%)")
+                print()
+
             if ml_return_3m is not None:
                 print(f"  3-Month Expected:     {ml_return_3m*100:+.1f}%")
             if ml_return_6m is not None:
@@ -492,6 +570,7 @@ def main():
             fred_data=fred_data,
             regime_validation=regime_validation,
             external_validation=external_validation,
+            crash_timing_results=crash_timing_results,
         )
 
         # ══════════════════════════════════════════════════════════
