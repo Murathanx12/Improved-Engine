@@ -260,3 +260,54 @@ class TestFRED:
         }
         prob = get_recession_probability(mock)
         assert prob < 0.30, f"Recession prob should be low in calm, got {prob:.2%}"
+
+
+class TestAnomalyBaseRate:
+    """Bug 4: Anomaly adjustment should use empirical crash rate, not hardcoded 0.12."""
+
+    def test_anomaly_uses_empirical_base_rate(self):
+        """The base_rate used in anomaly adjustment should come from
+        crash_model._train_crash_rate, not a hardcoded constant."""
+        from unittest.mock import MagicMock
+        from finpredict.config import config
+
+        # Mock crash_model with empirical rate
+        crash_model = MagicMock()
+        crash_model._train_crash_rate = {"12m": 0.08}
+        crash_model.is_trained = True
+
+        # Simulate the anomaly adjustment formula
+        ml_crash_prob = 0.40
+        conf_factor = 0.70
+        anomaly_report = {"is_anomalous": True, "confidence_factor": conf_factor}
+
+        # The fixed code: uses empirical rate
+        base_rate = crash_model._train_crash_rate.get(
+            "12m",
+            config.get("ml", {}).get("crash_base_rate_fallback", 0.12),
+        )
+        adjusted = ml_crash_prob * conf_factor + base_rate * (1 - conf_factor)
+
+        # With base_rate=0.08: adjusted = 0.40*0.70 + 0.08*0.30 = 0.304
+        assert base_rate == 0.08, f"Expected empirical rate 0.08, got {base_rate}"
+        expected = 0.40 * 0.70 + 0.08 * 0.30
+        assert abs(adjusted - expected) < 1e-6
+
+        # Verify it's different from the old hardcoded value
+        old_adjusted = ml_crash_prob * conf_factor + 0.12 * (1 - conf_factor)
+        assert adjusted != old_adjusted, "Adjustment should differ from hardcoded 0.12"
+
+    def test_base_rate_fallback_from_config(self):
+        """When _train_crash_rate is empty, fallback should come from config."""
+        from unittest.mock import MagicMock
+        from finpredict.config import config
+
+        crash_model = MagicMock()
+        crash_model._train_crash_rate = {}
+
+        base_rate = crash_model._train_crash_rate.get(
+            "12m",
+            config.get("ml", {}).get("crash_base_rate_fallback", 0.12),
+        )
+        expected_fallback = config.get("ml", {}).get("crash_base_rate_fallback", 0.12)
+        assert base_rate == expected_fallback

@@ -153,3 +153,45 @@ class TestExternalValidation:
             alt_data={"imf": {2025: 2.5, 2026: 2.8}},
         )
         assert result.imf_signal == "GROWTH"
+
+    def test_fed_dovish_in_crash_not_flagged(self):
+        """Bug 6: Fed DOVISH + engine bearish + market down 20% = no divergence alert.
+        In a crisis (2008, 2020), dovish Fed and bearish engine are aligned."""
+        dates = pd.date_range("2022-01-01", periods=500, freq="D")
+        # Fed cutting rates: from 5% to 3%
+        ff = pd.Series(np.linspace(5.0, 3.0, 500), index=dates)
+        fred_data = {"fed_funds": ff}
+
+        # Market data: starts at 4500, drops to 3600 (down 20%)
+        sp_prices = np.concatenate([
+            np.linspace(4500, 4500, 248),   # 52-week high at 4500
+            np.linspace(4500, 3600, 252),   # Drops 20%
+        ])
+        market_data = pd.DataFrame({"SP500": sp_prices}, index=dates)
+
+        result = validate_external(fred_data, 0.60, "Bear", data=market_data)
+        assert result.fed_signal == "DOVISH"
+        # No divergence alert about Fed — crisis response is aligned
+        fed_alerts = [a for a in result.divergence_alerts if "Fed" in a or "dovish" in a.lower()]
+        assert len(fed_alerts) == 0, f"Unexpected Fed divergence alerts: {fed_alerts}"
+
+    def test_fed_dovish_near_highs_is_flagged(self):
+        """Bug 6: Fed DOVISH + engine bearish + market near highs = divergence alert.
+        Preemptive easing while market is fine = genuine conflict."""
+        dates = pd.date_range("2022-01-01", periods=500, freq="D")
+        # Fed cutting rates
+        ff = pd.Series(np.linspace(5.0, 3.0, 500), index=dates)
+        fred_data = {"fed_funds": ff}
+
+        # Market near 52-week highs (only down 2%)
+        sp_prices = np.concatenate([
+            np.linspace(4400, 4500, 248),
+            np.linspace(4500, 4410, 252),   # Only 2% off highs
+        ])
+        market_data = pd.DataFrame({"SP500": sp_prices}, index=dates)
+
+        result = validate_external(fred_data, 0.60, "Bear", data=market_data)
+        assert result.fed_signal == "DOVISH"
+        # Should have a divergence alert
+        fed_alerts = [a for a in result.divergence_alerts if "Fed" in a or "dovish" in a.lower()]
+        assert len(fed_alerts) > 0, "Expected Fed divergence alert when market is near highs"
