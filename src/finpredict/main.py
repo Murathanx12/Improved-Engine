@@ -53,6 +53,7 @@ from finpredict.ml.xgboost_model import XGBoostCrashPredictor
 from finpredict.ml.sequence_model import TemporalEnsemble
 from finpredict.ml.meta_stacker import MetaStacker
 from finpredict.ml.crash_timing import CrashTimingClassifier
+from finpredict.ml.anomaly_detector import AnomalyDetector, BayesianChangepoint
 from finpredict.intelligence import fetch_gdelt_data, compute_event_score
 from finpredict.intelligence.event_scorer import adjust_crash_probability
 
@@ -265,14 +266,21 @@ def main():
             if xgb_model and xgb_model.is_trained:
                 xgb_crash_12m = float(xgb_model.predict_proba(current_row, "12m")[0])
 
-            # LSTM + TCN temporal prediction
+            # LSTM + TCN temporal predictions (individual)
             lstm_crash_12m = None
+            tcn_crash_12m = None
             if temporal_model and temporal_model.is_trained:
                 seq_start = max(0, len(current_features) - temporal_model.WINDOW_SIZE)
                 seq_features = current_features.iloc[seq_start:]
                 if len(seq_features) >= temporal_model.WINDOW_SIZE:
-                    temporal_preds = temporal_model.predict_proba(seq_features, "12m")
-                    lstm_crash_12m = float(temporal_preds[-1])
+                    try:
+                        indiv = temporal_model.predict_individual(seq_features, "12m")
+                        lstm_crash_12m = float(indiv["lstm"][-1])
+                        tcn_crash_12m = float(indiv["tcn"][-1])
+                    except Exception:
+                        temporal_preds = temporal_model.predict_proba(seq_features, "12m")
+                        lstm_crash_12m = float(temporal_preds[-1])
+                        tcn_crash_12m = lstm_crash_12m
 
             # Meta-stacker ensemble
             if meta_stacker and meta_stacker.is_trained:
@@ -280,7 +288,7 @@ def main():
                     "lgb": lgb_crash_12m,
                     "xgb": xgb_crash_12m if xgb_crash_12m is not None else lgb_crash_12m,
                     "lstm": lstm_crash_12m if lstm_crash_12m is not None else lgb_crash_12m,
-                    "tcn": lstm_crash_12m if lstm_crash_12m is not None else lgb_crash_12m,
+                    "tcn": tcn_crash_12m if tcn_crash_12m is not None else lgb_crash_12m,
                 }
                 regime_probs_arr = hmm_result.regime_probs if hmm_result.success else None
                 ml_crash_prob = float(meta_stacker.predict_proba(
@@ -329,7 +337,9 @@ def main():
             if xgb_crash_12m is not None:
                 print(f"    XGBoost:            {xgb_crash_12m*100:.1f}%")
             if lstm_crash_12m is not None:
-                print(f"    LSTM+TCN:           {lstm_crash_12m*100:.1f}%")
+                print(f"    LSTM:               {lstm_crash_12m*100:.1f}%")
+            if tcn_crash_12m is not None:
+                print(f"    TCN:                {tcn_crash_12m*100:.1f}%")
             if meta_stacker and meta_stacker.is_trained:
                 weights = meta_stacker.get_model_weights("12m")
                 if weights:
@@ -402,6 +412,44 @@ def main():
             print("\n[WARN] ML models not available — using statistical defaults")
 
         # ══════════════════════════════════════════════════════════
+        # 9a. ANOMALY DETECTION & CHANGEPOINT ANALYSIS
+        # ══════════════════════════════════════════════════════════
+        anomaly_report = None
+        changepoint_report = None
+        try:
+            print(f"\n[MODULE 6a] Running anomaly detection...")
+            if crash_model and crash_model.is_trained:
+                anomaly_det = AnomalyDetector()
+                anomaly_det.fit(current_features.iloc[:-1])
+                anomaly_report = anomaly_det.anomaly_report(current_row)
+                print(f"  [ANOMALY] Status: {anomaly_report['status']} "
+                      f"(score={anomaly_report['score']:.3f})")
+                if anomaly_report['is_anomalous']:
+                    print(f"  [ANOMALY] {anomaly_report['interpretation']}")
+                    # Reduce confidence in ML predictions when extrapolating
+                    if ml_crash_prob is not None:
+                        conf_factor = anomaly_report['confidence_factor']
+                        base_rate = 0.12  # Historical crash base rate
+                        adjusted = ml_crash_prob * conf_factor + base_rate * (1 - conf_factor)
+                        print(f"  [ANOMALY] Crash prob adjusted: {ml_crash_prob*100:.1f}% "
+                              f"-> {adjusted*100:.1f}% (confidence factor: {conf_factor:.2f})")
+                        ml_crash_prob = adjusted
+
+            # Changepoint detection on recent returns
+            cp_detector = BayesianChangepoint(hazard_rate=1/252)
+            recent_returns = data["Daily_Returns"].dropna()
+            cp_report = cp_detector.recent_changepoint(recent_returns, window=90)
+            changepoint_report = cp_report
+            if cp_report["detected"]:
+                print(f"  [CHANGEPOINT] Regime shift detected {cp_report['days_ago']} days ago "
+                      f"(prob={cp_report['max_prob']:.2f})")
+            else:
+                print(f"  [CHANGEPOINT] No recent regime shift detected "
+                      f"(max_prob={cp_report['max_prob']:.2f})")
+        except Exception as e:
+            print(f"  [ANOMALY] Detection failed: {e} — continuing without")
+
+        # ══════════════════════════════════════════════════════════
         # 9b. OSINT INTELLIGENCE LAYER (event-driven risk)
         # ══════════════════════════════════════════════════════════
         event_score_result = None
@@ -437,6 +485,7 @@ def main():
             from finpredict.validation import validate_regime, validate_external
             from finpredict.data.alternative_fetchers import (
                 fetch_aaii_sentiment, fetch_naaim_exposure, fetch_imf_gdp_forecast,
+                fetch_fed_funds_futures,
             )
 
             regime_validation = validate_regime(data, current_regime, hmm_result)
@@ -460,6 +509,10 @@ def main():
                 alt_data["naaim"] = fetch_naaim_exposure()
             except Exception:
                 alt_data["naaim"] = None
+            try:
+                alt_data["fed_futures"] = fetch_fed_funds_futures()
+            except Exception:
+                alt_data["fed_futures"] = None
 
             external_validation = validate_external(
                 fred_data, ml_crash_prob, current_regime, alt_data=alt_data,

@@ -209,15 +209,21 @@ def run_backtest(
             if xgb_model.is_trained:
                 xgb_crash_12m = float(xgb_model.predict_proba(current_features, "12m")[0])
 
-            # LSTM + TCN predictions
+            # LSTM + TCN individual predictions
             lstm_crash_12m = None
+            tcn_crash_12m = None
             if temporal_model.is_trained:
-                # Need at least WINDOW_SIZE rows for a sequence
                 seq_start = max(0, idx - temporal_model.WINDOW_SIZE + 1)
                 seq_features = features.iloc[seq_start:idx+1]
                 if len(seq_features) >= temporal_model.WINDOW_SIZE:
-                    temporal_preds = temporal_model.predict_proba(seq_features, "12m")
-                    lstm_crash_12m = float(temporal_preds[-1])
+                    try:
+                        indiv = temporal_model.predict_individual(seq_features, "12m")
+                        lstm_crash_12m = float(indiv["lstm"][-1])
+                        tcn_crash_12m = float(indiv["tcn"][-1])
+                    except Exception:
+                        temporal_preds = temporal_model.predict_proba(seq_features, "12m")
+                        lstm_crash_12m = float(temporal_preds[-1])
+                        tcn_crash_12m = lstm_crash_12m
 
             # Collect OOS predictions for meta-stacker training
             oos_indices.append(idx)
@@ -232,7 +238,25 @@ def run_backtest(
             oos_predictions["lgb"]["12m"].append(lgb_crash_12m)
             oos_predictions["xgb"]["12m"].append(xgb_crash_12m if xgb_crash_12m is not None else 0.12)
             oos_predictions["lstm"]["12m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
-            oos_predictions["tcn"]["12m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
+            oos_predictions["tcn"]["12m"].append(tcn_crash_12m if tcn_crash_12m is not None else 0.12)
+
+            # Collect 6m and 3m OOS predictions for multi-horizon meta-stacker
+            if lgb_crash_6m is not None:
+                oos_predictions["lgb"]["6m"].append(lgb_crash_6m)
+                oos_predictions["xgb"]["6m"].append(
+                    float(xgb_model.predict_proba(current_features, "6m")[0])
+                    if xgb_model.is_trained and "6m" in xgb_model.models else lgb_crash_6m
+                )
+                oos_predictions["lstm"]["6m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
+                oos_predictions["tcn"]["6m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
+            if lgb_crash_3m is not None:
+                oos_predictions["lgb"]["3m"].append(lgb_crash_3m)
+                oos_predictions["xgb"]["3m"].append(
+                    float(xgb_model.predict_proba(current_features, "3m")[0])
+                    if xgb_model.is_trained and "3m" in xgb_model.models else lgb_crash_3m
+                )
+                oos_predictions["lstm"]["3m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
+                oos_predictions["tcn"]["3m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
 
             # Meta-stacker ensemble prediction
             if meta_stacker.is_trained:
@@ -240,7 +264,7 @@ def run_backtest(
                     "lgb": lgb_crash_12m,
                     "xgb": xgb_crash_12m if xgb_crash_12m is not None else lgb_crash_12m,
                     "lstm": lstm_crash_12m if lstm_crash_12m is not None else lgb_crash_12m,
-                    "tcn": lstm_crash_12m if lstm_crash_12m is not None else lgb_crash_12m,
+                    "tcn": tcn_crash_12m if tcn_crash_12m is not None else lgb_crash_12m,
                 }
                 ml_crash_12m = float(meta_stacker.predict_proba(model_preds, horizon="12m")[0])
             else:
@@ -314,9 +338,13 @@ def run_backtest(
         actual_crash_6m = _check_crash(idx, actual_idx_6m)
         actual_crash_3m = _check_crash(idx, actual_idx_3m)
 
-        # Collect OOS targets for meta-stacker training
+        # Collect OOS targets for meta-stacker training (all horizons)
         if "12m" in oos_targets:
             oos_targets["12m"].append(float(actual_crash_12m))
+        if "6m" in oos_targets and lgb_crash_6m is not None:
+            oos_targets["6m"].append(float(actual_crash_6m))
+        if "3m" in oos_targets and lgb_crash_3m is not None:
+            oos_targets["3m"].append(float(actual_crash_3m))
 
         # MC crash probability (secondary)
         sim_peak = np.maximum.accumulate(paths, axis=0)
@@ -344,6 +372,7 @@ def run_backtest(
             "lgb_crash_12m": lgb_crash_12m,
             "xgb_crash_12m": xgb_crash_12m,
             "lstm_crash_12m": lstm_crash_12m,
+            "tcn_crash_12m": tcn_crash_12m,
             # ML return predictions (PRIMARY)
             "ml_return_12m": ml_return_12m,
             "ml_return_6m": ml_return_6m,
@@ -425,6 +454,13 @@ def run_backtest(
 
         except Exception as e:
             print(f"  [EVAL] Evaluation failed: {e}")
+
+        # ── Paper-ready results table ──────────────────────────────────
+        try:
+            paper_table = _build_paper_results_table(bt, data)
+            bt.attrs["paper_results"] = paper_table
+        except Exception as e:
+            print(f"  [EVAL] Paper results table failed: {e}")
 
     return bt
 
@@ -691,3 +727,284 @@ def _extract_crash_periods(bt: pd.DataFrame) -> pd.DataFrame:
         crashes.append({"start": crash_start, "end": bt_sorted["date"].iloc[-1]})
 
     return pd.DataFrame(crashes)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PAPER-READY RESULTS TABLE
+# ═══════════════════════════════════════════════════════════════════════
+
+def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
+    """Build comprehensive per-model, per-horizon results table for publication.
+
+    Generates Table 1 (Crash Model BSS) and Table 2 (Lead Time / False Alarm)
+    suitable for an academic paper.
+
+    Returns:
+        dict with 'bss_table' (DataFrame), 'operational_table' (DataFrame),
+        and 'per_model_auc' (dict).
+    """
+    from sklearn.metrics import roc_auc_score
+    from finpredict.evaluation.metrics import (
+        brier_score as eval_brier,
+        brier_skill_score as eval_bss,
+        reliability_diagram,
+        lead_time_accuracy,
+        false_alarm_rate,
+        missed_crash_rate,
+    )
+
+    model_cols = {
+        "LightGBM": "lgb_crash_12m",
+        "XGBoost": "xgb_crash_12m",
+        "LSTM": "lstm_crash_12m",
+        "TCN": "tcn_crash_12m",
+        "Meta-Ensemble": "ml_crash_12m",
+    }
+
+    # Also handle multi-horizon for ensemble
+    horizon_cols = {
+        "3m": ("ml_crash_3m", "actual_crash_3m"),
+        "6m": ("ml_crash_6m", "actual_crash_6m"),
+        "12m": ("ml_crash_12m", "actual_crash_12m"),
+    }
+
+    # ── Table 1: BSS per model (12m horizon) ────────────────────────
+    print(f"\n  ═══════════════════════════════════════════════════════════")
+    print(f"  TABLE 1: Crash Prediction — Brier Skill Score (12-month)")
+    print(f"  ═══════════════════════════════════════════════════════════")
+
+    bss_rows = []
+    y_true_12m = bt["actual_crash_12m"].astype(float).values
+
+    # Prepare VIX series for baseline if available
+    vix_series = None
+    if "VIX" in data.columns:
+        # Align VIX with backtest dates
+        vix_vals = []
+        for _, row in bt.iterrows():
+            dt = pd.Timestamp(row["date"])
+            idx = data.index.get_indexer([dt], method="nearest")[0]
+            vix_vals.append(float(data["VIX"].iloc[idx]) if "VIX" in data.columns else 20.0)
+        vix_series = pd.Series(vix_vals)
+
+    # Yield spread for baseline
+    spread_series = None
+    if "T10Y" in data.columns and "T3M" in data.columns:
+        spread_vals = []
+        for _, row in bt.iterrows():
+            dt = pd.Timestamp(row["date"])
+            idx = data.index.get_indexer([dt], method="nearest")[0]
+            t10y = float(data["T10Y"].iloc[idx]) if "T10Y" in data.columns else 0.03
+            t3m = float(data["T3M"].iloc[idx]) if "T3M" in data.columns else 0.02
+            spread_vals.append(t10y - t3m)
+        spread_series = pd.Series(spread_vals)
+
+    for model_name, col in model_cols.items():
+        if col not in bt.columns:
+            continue
+
+        y_pred = bt[col].values
+        valid = ~np.isnan(y_pred)
+        if valid.sum() < 10:
+            continue
+
+        yp = y_pred[valid]
+        yt = y_true_12m[valid]
+
+        bs = eval_brier(yp, yt)
+        bss_clim = eval_bss(yp, yt, baseline="climatology")
+
+        bss_vix = float("nan")
+        if vix_series is not None:
+            vs = vix_series.values[valid]
+            bss_vix = eval_bss(yp, yt, baseline="vix25", vix_series=pd.Series(vs))
+
+        bss_yc = float("nan")
+        if spread_series is not None:
+            ss = spread_series.values[valid]
+            bss_yc = eval_bss(yp, yt, baseline="yield_curve", spread_series=pd.Series(ss))
+
+        try:
+            auc = float(roc_auc_score(yt, yp)) if len(set(yt)) >= 2 else float("nan")
+        except Exception:
+            auc = float("nan")
+
+        rel = reliability_diagram(yp, yt)
+        pred_std = float(np.std(yp))
+
+        bss_rows.append({
+            "Model": model_name,
+            "N": int(valid.sum()),
+            "Brier": f"{bs:.4f}",
+            "BSS_Clim": f"{bss_clim:+.4f}",
+            "BSS_VIX25": f"{bss_vix:+.4f}" if not np.isnan(bss_vix) else "—",
+            "BSS_YC": f"{bss_yc:+.4f}" if not np.isnan(bss_yc) else "—",
+            "AUC": f"{auc:.3f}" if not np.isnan(auc) else "—",
+            "ECE": f"{rel['calibration_error']:.4f}",
+            "Pred_Std": f"{pred_std:.4f}",
+        })
+
+    bss_df = pd.DataFrame(bss_rows)
+    if not bss_df.empty:
+        # Print formatted table
+        header = f"  {'Model':<16} {'N':>5} {'Brier':>8} {'BSS_Clim':>10} {'BSS_VIX':>10} {'BSS_YC':>10} {'AUC':>6} {'ECE':>8} {'Std':>8}"
+        print(header)
+        print(f"  {'─'*90}")
+        for _, row in bss_df.iterrows():
+            print(f"  {row['Model']:<16} {row['N']:>5} {row['Brier']:>8} {row['BSS_Clim']:>10} "
+                  f"{row['BSS_VIX25']:>10} {row['BSS_YC']:>10} {row['AUC']:>6} "
+                  f"{row['ECE']:>8} {row['Pred_Std']:>8}")
+
+    # ── Table 1b: Multi-horizon BSS (Ensemble only) ─────────────────
+    print(f"\n  ═══════════════════════════════════════════════════════════")
+    print(f"  TABLE 1b: Meta-Ensemble BSS by Horizon")
+    print(f"  ═══════════════════════════════════════════════════════════")
+
+    horizon_rows = []
+    for horizon, (pred_col, actual_col) in horizon_cols.items():
+        if pred_col not in bt.columns or actual_col not in bt.columns:
+            continue
+
+        yp = bt[pred_col].dropna().values
+        yt = bt[actual_col].loc[bt[pred_col].notna()].astype(float).values
+
+        if len(yp) < 10 or len(yp) != len(yt):
+            continue
+
+        bs = eval_brier(yp, yt)
+        bss_clim = eval_bss(yp, yt, baseline="climatology")
+
+        try:
+            auc = float(roc_auc_score(yt, yp)) if len(set(yt)) >= 2 else float("nan")
+        except Exception:
+            auc = float("nan")
+
+        base_rate = float(yt.mean())
+        horizon_rows.append({
+            "Horizon": horizon,
+            "N": len(yp),
+            "Base_Rate": f"{base_rate:.1%}",
+            "Brier": f"{bs:.4f}",
+            "BSS_Clim": f"{bss_clim:+.4f}",
+            "AUC": f"{auc:.3f}" if not np.isnan(auc) else "—",
+        })
+
+    if horizon_rows:
+        print(f"  {'Horizon':<10} {'N':>5} {'Base Rate':>10} {'Brier':>8} {'BSS_Clim':>10} {'AUC':>6}")
+        print(f"  {'─'*55}")
+        for row in horizon_rows:
+            print(f"  {row['Horizon']:<10} {row['N']:>5} {row['Base_Rate']:>10} "
+                  f"{row['Brier']:>8} {row['BSS_Clim']:>10} {row['AUC']:>6}")
+
+    # ── Table 2: Operational Metrics ────────────────────────────────
+    print(f"\n  ═══════════════════════════════════════════════════════════")
+    print(f"  TABLE 2: Operational Metrics (Lead Time, False Alarms)")
+    print(f"  ═══════════════════════════════════════════════════════════")
+
+    crash_periods = _extract_crash_periods(bt)
+    op_rows = []
+
+    for model_name, col in model_cols.items():
+        if col not in bt.columns:
+            continue
+
+        valid = bt[col].notna()
+        if valid.sum() < 10:
+            continue
+
+        bt_valid = bt[valid].copy()
+
+        # Lead time (threshold=0.40 for early warning)
+        lt = {"mean_lead_days": 0, "n_detected": 0, "n_crashes": 0}
+        if not crash_periods.empty:
+            lt = lead_time_accuracy(bt_valid, crash_periods, prob_col=col, prob_threshold=0.40)
+
+        # False alarm rate (threshold=0.60 for high-confidence alerts)
+        fa = false_alarm_rate(bt_valid, prob_col=col, alarm_threshold=0.60)
+
+        # Missed crash rate (threshold=0.30 for "safe" calls)
+        mc = {"rate": 0, "n_missed": 0, "n_crashes": 0}
+        if not crash_periods.empty:
+            mc = missed_crash_rate(bt_valid, crash_periods, prob_col=col, safe_threshold=0.30)
+
+        op_rows.append({
+            "Model": model_name,
+            "Lead_Days": f"{lt['mean_lead_days']:.0f}",
+            "Detected": f"{lt['n_detected']}/{lt['n_crashes']}",
+            "FA_Rate": f"{fa['rate']:.0%}",
+            "FA_Count": f"{fa['n_false_alarms']}/{fa['n_alarms']}",
+            "Miss_Rate": f"{mc['rate']:.0%}",
+            "Miss_Count": f"{mc['n_missed']}/{mc['n_crashes']}",
+        })
+
+    if op_rows:
+        print(f"  {'Model':<16} {'Lead(d)':>8} {'Det.':>6} {'FA Rate':>8} {'FA':>6} {'Miss%':>7} {'Miss':>6}")
+        print(f"  {'─'*65}")
+        for row in op_rows:
+            print(f"  {row['Model']:<16} {row['Lead_Days']:>8} {row['Detected']:>6} "
+                  f"{row['FA_Rate']:>8} {row['FA_Count']:>6} {row['Miss_Rate']:>7} "
+                  f"{row['Miss_Count']:>6}")
+
+    # ── Table 3: Per-crash lead time detail ─────────────────────────
+    if not crash_periods.empty:
+        print(f"\n  ═══════════════════════════════════════════════════════════")
+        print(f"  TABLE 3: Per-Crash Detection Detail (Meta-Ensemble)")
+        print(f"  ═══════════════════════════════════════════════════════════")
+
+        lt_detail = lead_time_accuracy(bt, crash_periods, prob_col="ml_crash_12m", prob_threshold=0.40)
+        if lt_detail["per_crash"]:
+            print(f"  {'Crash Start':<14} {'Detected':>10} {'Lead Days':>10} {'Alert Prob':>11}")
+            print(f"  {'─'*50}")
+            for pc in lt_detail["per_crash"]:
+                det_str = "YES" if pc["detected"] else "NO"
+                lead_str = f"{pc['lead_days']}" if pc["detected"] else "—"
+                prob_str = f"{pc.get('first_alert_prob', 0):.1%}" if pc["detected"] else "—"
+                print(f"  {pc['crash_start']:<14} {det_str:>10} {lead_str:>10} {prob_str:>11}")
+
+    # ── Summary verdict ─────────────────────────────────────────────
+    print(f"\n  ═══════════════════════════════════════════════════════════")
+    print(f"  PUBLICATION READINESS ASSESSMENT")
+    print(f"  ═══════════════════════════════════════════════════════════")
+
+    if bss_rows:
+        ensemble_row = next((r for r in bss_rows if r["Model"] == "Meta-Ensemble"), None)
+        if ensemble_row:
+            bss_val = float(ensemble_row["BSS_Clim"].replace("+", ""))
+            auc_str = ensemble_row["AUC"]
+            auc_val = float(auc_str) if auc_str != "—" else 0.5
+
+            checks = []
+            checks.append(("BSS > 0 (beats climatology)", bss_val > 0))
+            checks.append(("AUC > 0.60 (discrimination)", auc_val > 0.60))
+
+            if op_rows:
+                ens_op = next((r for r in op_rows if r["Model"] == "Meta-Ensemble"), None)
+                if ens_op:
+                    fa_val = float(ens_op["FA_Rate"].replace("%", "")) / 100
+                    miss_val = float(ens_op["Miss_Rate"].replace("%", "")) / 100
+                    checks.append(("False alarm rate < 30%", fa_val < 0.30))
+                    checks.append(("Missed crash rate < 20%", miss_val < 0.20))
+
+            pred_std_val = float(ensemble_row["Pred_Std"])
+            checks.append(("Prediction spread > 5% (not collapsed)", pred_std_val > 0.05))
+
+            passed = sum(1 for _, v in checks if v)
+            total = len(checks)
+
+            for label, ok in checks:
+                status = "PASS" if ok else "FAIL"
+                print(f"  [{status}] {label}")
+
+            print(f"\n  Result: {passed}/{total} checks passed")
+            if passed == total:
+                print(f"  Verdict: READY for submission — model demonstrates genuine skill")
+            elif passed >= total - 1:
+                print(f"  Verdict: NEAR-READY — minor improvements needed")
+            else:
+                print(f"  Verdict: NOT READY — significant improvements needed")
+
+    return {
+        "bss_table": bss_df if not bss_df.empty else pd.DataFrame(),
+        "horizon_table": pd.DataFrame(horizon_rows) if horizon_rows else pd.DataFrame(),
+        "operational_table": pd.DataFrame(op_rows) if op_rows else pd.DataFrame(),
+    }

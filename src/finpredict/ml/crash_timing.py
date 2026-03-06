@@ -152,15 +152,33 @@ if _HAS_LIGHTGBM:
             n = len(X)
             sample_weights = np.linspace(0.5, 1.5, n)
 
-            # Train/val split (80/20, no purge needed since this is a classification model)
-            split = int(n * 0.8)
-            train_X, val_X = X.iloc[:split], X.iloc[split:]
-            train_y, val_y = y.iloc[:split], y.iloc[split:]
+            # Train/val split with purge gap (labels are forward-looking 12 months)
+            gap_days = 265  # Purge gap covers 12-month forward label window
+            val_size = max(504, n // 5)
+            split = n - val_size - gap_days
+
+            if split < min_train_samples // 2:
+                # Not enough data for proper purge — reduce gap
+                split = int(n * 0.75)
+                gap_days = 0
+
+            train_X = X.iloc[:split]
+            train_y = y.iloc[:split]
             train_w = sample_weights[:split]
+            val_X = X.iloc[split + gap_days:]
+            val_y = y.iloc[split + gap_days:]
+
+            if len(val_y) < 50 or val_y.nunique() < 2:
+                # Fallback: simple split without purge
+                split = int(n * 0.8)
+                train_X = X.iloc[:split]
+                train_y = y.iloc[:split]
+                train_w = sample_weights[:split]
+                val_X = X.iloc[split:]
+                val_y = y.iloc[split:]
 
             if val_y.nunique() < 2:
-                # Use last 10% of training as validation
-                eval_split = int(split * 0.9)
+                eval_split = int(len(train_X) * 0.9)
                 val_X = train_X.iloc[eval_split:]
                 val_y = train_y.iloc[eval_split:]
 
