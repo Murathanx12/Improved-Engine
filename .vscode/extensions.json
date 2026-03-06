@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "charliermarsh.ruff",
+    "ms-toolsai.jupyter",
+    "redhat.vscode-yaml",
+    "tamasfe.even-better-toml"
+  ]
+}
