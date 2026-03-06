@@ -34,6 +34,8 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
+from finpredict.config import config as _cfg
+
 try:
     import lightgbm as lgb
 
@@ -139,11 +141,13 @@ if _HAS_LIGHTGBM:
             """Train median + quantile models for a single horizon."""
             n_samples = len(X)
 
-            # ── Temporal weighting ────────────────────────────────────
-            temporal_weights = np.linspace(0.5, 1.5, n_samples)
+            # ── Exponential temporal weighting from config ─────────────
+            decay = _cfg.get("ml", {}).get("temporal_weight_decay", 0.0005)
+            temporal_weights = np.exp(-decay * (n_samples - np.arange(n_samples)))
 
-            # ── Purged split ──────────────────────────────────────────
-            gap_days = {"3m": 70, "6m": 140, "12m": 265}.get(horizon, 265)
+            # ── Purged split — gaps from config ──────────────────────
+            purge_cfg = _cfg.get("ml", {}).get("purge_gaps", {"3m": 70, "6m": 140, "12m": 265})
+            gap_days = purge_cfg.get(horizon, purge_cfg.get("12m", 265))
             val_size = max(504, n_samples // 5)
             split_idx = n_samples - val_size - gap_days
 

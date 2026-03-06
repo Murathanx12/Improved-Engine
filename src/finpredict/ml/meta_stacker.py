@@ -28,6 +28,7 @@ TRAINING:
     Each model's prediction at time t was made without seeing any data after t.
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from typing import Optional
@@ -35,6 +36,10 @@ from typing import Optional
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import brier_score_loss
+
+from finpredict.config import config as _cfg
+
+logger = logging.getLogger(__name__)
 
 
 class MetaStacker:
@@ -218,39 +223,55 @@ class MetaStacker:
         Args:
             model_predictions: {model_name: probability_value_or_array}
                 Example: {"lgb": 0.35, "xgb": 0.30, "lstm": 0.45, "tcn": 0.40}
+                Missing models should be passed as None — they are excluded
+                from the combination rather than filled with a constant.
             regime_probs: [p_bull, p_bear, p_crisis] array.
             horizon: Prediction horizon.
 
         Returns:
             Calibrated ensemble crash probability.
         """
+        ms_cfg = _cfg.get("ml", {}).get("meta_stacker", {})
+        min_models = ms_cfg.get("min_models_required", 2)
+        fallback_single = ms_cfg.get("fallback_to_best_single", True)
+
         # Determine which models from training are actually available now
         available_at_inference = [
             m for m in self._available_models
             if model_predictions.get(m) is not None
         ]
 
+        # Collect only non-None predictions for simple averaging
+        available_preds = [
+            (k, v) for k, v in model_predictions.items()
+            if k in self.MODEL_NAMES and v is not None
+        ]
+
+        if not available_preds:
+            logger.warning("[WARN] No model predictions available for ensemble")
+            base = _cfg.get("ml", {}).get("crash_base_rate_fallback", 0.12)
+            return np.array([base])
+
+        if len(available_preds) == 1 and fallback_single:
+            # Single model: return its prediction directly
+            return np.clip(np.array([float(available_preds[0][1])]), 0.02, 0.98)
+
         if not self.is_trained or horizon not in self.stackers:
             # Fallback: simple average of available predictions
-            available = [
-                v for k, v in model_predictions.items()
-                if k in self.MODEL_NAMES and v is not None
-            ]
-            if available:
-                return np.clip(np.mean(available), 0.02, 0.98)
-            return np.array([0.12])
+            vals = [float(v) for _, v in available_preds]
+            return np.clip(np.array([np.mean(vals)]), 0.02, 0.98)
 
         # If any model that was available during training is now missing,
         # the stacker's learned weights are invalid — fall back to simple
         # average of whatever models ARE available.
         if set(available_at_inference) != set(self._available_models):
-            available = [
-                v for k, v in model_predictions.items()
-                if k in self.MODEL_NAMES and v is not None
-            ]
-            if available:
-                return np.clip(np.mean(available), 0.02, 0.98)
-            return np.array([0.12])
+            logger.warning(
+                "[WARN] Models changed since training "
+                f"(train={self._available_models}, now={available_at_inference}), "
+                "falling back to simple average"
+            )
+            vals = [float(v) for _, v in available_preds]
+            return np.clip(np.array([np.mean(vals)]), 0.02, 0.98)
 
         # Build meta-features (all training models guaranteed present)
         meta_features = []
@@ -283,7 +304,29 @@ class MetaStacker:
         X = np.nan_to_num(X, nan=0.0)
         X_s = self.scalers[horizon].transform(X)
         prob = self.stackers[horizon].predict_proba(X_s)[:, 1]
+
+        # Also compute ensemble disagreement stats
+        pred_vals = [float(v) for _, v in available_preds]
+        self._last_ensemble_std = float(np.std(pred_vals)) if len(pred_vals) > 1 else 0.0
+        self._last_ensemble_min = float(np.min(pred_vals))
+        self._last_ensemble_max = float(np.max(pred_vals))
+        threshold = _cfg.get("ml", {}).get("ensemble_disagreement_threshold", 0.12)
+        self._last_disagreement_flag = self._last_ensemble_std > threshold
+
         return np.clip(prob, 0.02, 0.98)
+
+    def get_ensemble_disagreement(self) -> dict:
+        """Return the most recent ensemble disagreement statistics.
+
+        Returns:
+            Dict with ensemble_std, ensemble_min, ensemble_max, disagreement_flag.
+        """
+        return {
+            "ensemble_std": getattr(self, "_last_ensemble_std", 0.0),
+            "ensemble_min": getattr(self, "_last_ensemble_min", 0.0),
+            "ensemble_max": getattr(self, "_last_ensemble_max", 0.0),
+            "disagreement_flag": getattr(self, "_last_disagreement_flag", False),
+        }
 
     def get_model_weights(self, horizon: str = "12m") -> dict:
         """Return learned model weights for interpretability.

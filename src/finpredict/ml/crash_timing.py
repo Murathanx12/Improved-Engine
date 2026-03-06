@@ -29,6 +29,8 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
+from finpredict.config import config as _cfg
+
 try:
     import lightgbm as lgb
     _HAS_LIGHTGBM = True
@@ -152,8 +154,9 @@ if _HAS_LIGHTGBM:
             n = len(X)
             sample_weights = np.linspace(0.5, 1.5, n)
 
-            # Train/val split with purge gap (labels are forward-looking 12 months)
-            gap_days = 265  # Purge gap covers 12-month forward label window
+            # Train/val split with purge gap from config
+            purge_cfg = _cfg.get("ml", {}).get("purge_gaps", {"12m": 265})
+            gap_days = purge_cfg.get("12m", 265)
             val_size = max(504, n // 5)
             split = n - val_size - gap_days
 

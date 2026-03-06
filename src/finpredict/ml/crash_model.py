@@ -36,6 +36,8 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
+from finpredict.config import config
+
 try:
     import lightgbm as lgb
     from sklearn.linear_model import LogisticRegression as _PlattScaler
@@ -294,9 +296,9 @@ if _HAS_LIGHTGBM:
             n_samples = len(X)
 
             # ── Temporal weighting ────────────────────────────────────
-            # Recent observations matter more — market structure evolves
-            # Linear ramp from 0.5 (oldest) to 1.5 (newest)
-            temporal_weights = np.linspace(0.5, 1.5, n_samples)
+            # Exponential decay: recent data matters more (configurable)
+            decay = config.get("ml", {}).get("temporal_weight_decay", 0.0005)
+            temporal_weights = np.exp(-decay * (n_samples - np.arange(n_samples)))
 
             # Also upweight samples near crash transitions (these are most informative)
             crash_transitions = np.abs(y.diff().fillna(0).values)
@@ -306,7 +308,8 @@ if _HAS_LIGHTGBM:
 
             # ── Purged split ──────────────────────────────────────────
             # Gap must cover the forward window to prevent label leakage
-            gap_days = {"3m": 70, "6m": 140, "12m": 265}.get(horizon, 265)
+            purge_cfg = config.get("ml", {}).get("purge_gaps", {"3m": 70, "6m": 140, "12m": 265})
+            gap_days = purge_cfg.get(horizon, purge_cfg.get("12m", 265))
             val_size = max(504, n_samples // 5)  # 20% for validation
             split_idx = n_samples - val_size - gap_days
 
@@ -589,8 +592,7 @@ if _HAS_LIGHTGBM:
             # more than the configured threshold, blend with lookup table.
             # Set divergence_threshold to 1.0 in config to effectively disable.
             if isinstance(features, pd.DataFrame):
-                from finpredict.config import config as _cfg
-                lt_cfg = _cfg.get("ml", {}).get("lookup_table_blend", {})
+                lt_cfg = config.get("ml", {}).get("lookup_table_blend", {})
                 divergence_threshold = lt_cfg.get("divergence_threshold", 0.15)
                 blend_ratio = lt_cfg.get("blend_ratio", 0.5)
                 lookup_prob = self._lookup_table_prob(features)

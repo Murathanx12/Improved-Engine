@@ -207,6 +207,45 @@ def validate_external(
     return result
 
 
+def composite_confidence_score(
+    validation: ExternalValidation,
+    ml_crash_prob: float,
+    ensemble_std: float = 0.0,
+) -> dict:
+    """M5: Combine external validation, ML confidence, and ensemble agreement
+    into a single composite confidence score in [0, 1].
+
+    Components:
+        1. External agreement (0-1): fraction of external signals that agree
+        2. ML confidence (0-1): how far ML prediction is from 0.5 (uncertain)
+        3. Ensemble agreement (0-1): 1 - normalized ensemble std
+
+    Returns:
+        Dict with composite score and component breakdown.
+    """
+    # Component 1: External agreement
+    ext_agreement = validation.engine_agreement
+
+    # Component 2: ML confidence (distance from 0.5)
+    ml_confidence = 2.0 * abs(ml_crash_prob - 0.5)  # 0 = uncertain, 1 = very confident
+
+    # Component 3: Ensemble agreement (inverse of std)
+    disagree_thresh = config.get("ml", {}).get("ensemble_disagreement_threshold", 0.12)
+    ensemble_agreement = max(0.0, 1.0 - ensemble_std / max(disagree_thresh, 0.01))
+
+    # Weighted composite
+    composite = 0.4 * ext_agreement + 0.3 * ml_confidence + 0.3 * ensemble_agreement
+    composite = float(np.clip(composite, 0.0, 1.0))
+
+    return {
+        "composite_confidence": composite,
+        "external_agreement": float(ext_agreement),
+        "ml_confidence": float(ml_confidence),
+        "ensemble_agreement": float(ensemble_agreement),
+        "n_divergence_alerts": len(validation.divergence_alerts),
+    }
+
+
 def _assess_lei(lei_series: pd.Series, cfg: dict) -> str:
     """Assess Leading Economic Index signal.
 

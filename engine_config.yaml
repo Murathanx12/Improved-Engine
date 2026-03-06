@@ -85,6 +85,22 @@ ml:
   lookup_table_blend:
     divergence_threshold: 0.15      # Blend when |ML - lookup| > this (set 1.0 to disable)
     blend_ratio: 0.5                # Weight on lookup table when blending (0 = pure ML)
+  meta_stacker:
+    min_models_required: 2          # Minimum models to use stacker (else fallback)
+    fallback_to_best_single: true   # If only 1 model, use it directly
+  lookup_blend_weight: 0.15         # Base weight for lookup table blending
+  lookup_blend_divergence_scale: 3.0  # How fast blend weight reduces with divergence
+  ensemble_disagreement_threshold: 0.12  # Std threshold for disagreement flag
+  purge_gaps:                            # Days gap between train/val to prevent label leakage
+    3m: 70                               # ~3 months of trading days
+    6m: 140                              # ~6 months
+    12m: 265                             # ~12 months + feature window
+  temporal_weight_decay: 0.0005          # Exponential decay rate for temporal weighting
+  dynamic_crash_threshold:
+    enabled: false                        # Enable VIX-scaled crash thresholds
+    vix_long_run_avg: 20.0               # Long-run VIX average for scaling
+    min_threshold: 0.15                   # Minimum crash threshold (low-vol)
+    max_threshold: 0.30                   # Maximum crash threshold (high-vol)
 
 
 # ── VALIDATION SETTINGS ─────────────────────────────────────────────────────────

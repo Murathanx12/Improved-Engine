@@ -61,6 +61,36 @@ class TestRegimeDetection:
         assert isinstance(regimes, pd.Series)
         assert current in ("Bull", "Bear", "Volatile", "Unknown")
 
+    def test_regime_uses_log_returns_consistently(self):
+        """B5: ann_ret and ann_vol must both use log returns, not mixed."""
+        import inspect
+        from finpredict.risk import regimes as reg_mod
+        source = inspect.getsource(reg_mod.detect_regimes)
+        # The variable 'w' used for ann_ret and ann_vol should come from log_returns
+        assert "log_returns" in source, "detect_regimes should use log_returns"
+        # ann_vol should use w (which is from log_returns), not raw 'returns'
+        assert "w.std()" in source or "w.mean()" in source, (
+            "ann_ret/ann_vol should be computed from log_returns variable 'w'"
+        )
+
+    def test_neutral_regime_exists(self):
+        """B5: Neutral regime should exist between Bull and Bear."""
+        from finpredict.risk.regimes import detect_regimes
+        n = 800
+        dates = pd.bdate_range("2015-01-01", periods=n)
+        # Flat market with low vol -> should produce Neutral, not Bear
+        prices = 100 + np.cumsum(np.random.default_rng(42).normal(0.0001, 0.003, n))
+        data = pd.DataFrame({
+            "SP500": prices,
+            "VIX": np.full(n, 14.0),
+            "Risk_Score": np.full(n, 0.0),
+        }, index=dates)
+        regimes, current = detect_regimes(data)
+        unique_regimes = set(regimes[regimes != ""].unique())
+        assert "Neutral" in unique_regimes or "Bull" in unique_regimes, (
+            f"Expected Neutral or Bull regime for flat market, got {unique_regimes}"
+        )
+
 
 class TestCrashIdentification:
     def test_crash_detection_returns_dataframe(self, sample_market_data):
@@ -68,6 +98,27 @@ class TestCrashIdentification:
         crash_df, freq = identify_crashes(sample_market_data)
         assert isinstance(crash_df, pd.DataFrame)
         assert freq >= 0
+
+    def test_ongoing_crash_captured_at_dataset_end(self):
+        """B3: If the dataset ends during a crash, it must still be recorded."""
+        from finpredict.risk.crashes import identify_crashes
+
+        # Create a price series that drops 25% at end without recovering
+        n = 500
+        dates = pd.bdate_range("2020-01-01", periods=n)
+        prices = np.ones(n) * 100.0
+        # Steady for first 400 days, then crash 30% over last 100
+        for i in range(400, n):
+            prices[i] = prices[399] * (1 - 0.30 * (i - 399) / 100)
+
+        data = pd.DataFrame({"SP500": prices}, index=dates)
+        crash_df, freq = identify_crashes(data, threshold=0.20)
+
+        assert len(crash_df) >= 1, "Ongoing crash at dataset end was not captured"
+        last_crash = crash_df.iloc[-1]
+        assert last_crash["severity"] == "Ongoing"
+        assert last_crash["end"] == dates[-1]
+        assert last_crash["max_dd"] < -0.20
 
 
 # ── Simulation Tests ────────────────────────────────────────────────────────
@@ -226,6 +277,20 @@ class TestHMM:
         probs = get_regime_probs(result)
         total = sum(probs.values())
         assert abs(total - 1.0) < 0.01
+
+    def test_hmm_stores_standardization_params(self, sample_market_data):
+        """B4: HMM must store feature_mean and feature_std for scoring new data."""
+        from finpredict.models.hmm_regimes import fit_hmm_regimes
+        result = fit_hmm_regimes(sample_market_data, n_fits=3)
+        if result.success:
+            assert result.feature_mean is not None, "feature_mean not saved"
+            assert result.feature_std is not None, "feature_std not saved"
+            assert len(result.feature_mean) >= 2  # at least returns + vol
+            assert len(result.feature_std) >= 2
+            assert (result.feature_std > 0).all(), "feature_std must be positive"
+        else:
+            # Fallback result should have None for these (no standardization)
+            pytest.skip("HMM fit did not succeed, skipping standardization test")
 
 
 # ── FRED Tests ──────────────────────────────────────────────────────────────

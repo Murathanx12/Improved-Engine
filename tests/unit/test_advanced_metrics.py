@@ -166,3 +166,82 @@ class TestSignalMaxDrawdown:
     def test_empty_data(self):
         result = signal_max_drawdown(pd.DataFrame())
         assert result["max_drawdown"] == 0.0
+
+    def test_sharpe_annualization_from_data(self):
+        """B6: Sharpe annualization must be computed from data spacing, not hardcoded."""
+        import inspect
+        from finpredict.evaluation.metrics import signal_max_drawdown as fn
+        source = inspect.getsource(fn)
+        assert "n_periods_per_year" in source, "Sharpe should use data-derived annualization"
+        assert "avg_days" in source, "Should compute average days between observations"
+        # Hardcoded sqrt(4) or sqrt(12) should NOT be present
+        assert "sqrt(4)" not in source, "Sharpe annualization should not be hardcoded sqrt(4)"
+        assert "sqrt(12)" not in source, "Sharpe annualization should not be hardcoded sqrt(12)"
+
+
+class TestConformalPredictor:
+    """N3: Conformal prediction intervals with coverage guarantees."""
+
+    def test_calibrate_and_predict(self):
+        from finpredict.evaluation.metrics import ConformalPredictor
+        rng = np.random.default_rng(42)
+        n = 100
+        cal_pred = rng.uniform(0.05, 0.5, n)
+        cal_true = (rng.uniform(0, 1, n) > 0.85).astype(float)
+
+        cp = ConformalPredictor(target_coverage=0.90)
+        cp.calibrate(cal_pred, cal_true)
+        assert cp._calibrated
+
+        interval = cp.predict_interval(0.30)
+        assert interval["lower"] <= 0.30 <= interval["upper"]
+        assert interval["coverage"] == 0.90
+        assert 0.0 <= interval["lower"]
+        assert interval["upper"] <= 1.0
+
+    def test_coverage_on_test_set(self):
+        """Conformal intervals should cover ~target_coverage of test set."""
+        from finpredict.evaluation.metrics import ConformalPredictor
+        rng = np.random.default_rng(42)
+        n_cal, n_test = 200, 100
+        all_pred = rng.uniform(0.05, 0.5, n_cal + n_test)
+        all_true = (rng.uniform(0, 1, n_cal + n_test) > 0.85).astype(float)
+
+        cp = ConformalPredictor(target_coverage=0.90)
+        cp.calibrate(all_pred[:n_cal], all_true[:n_cal])
+
+        covered = 0
+        for i in range(n_test):
+            interval = cp.predict_interval(float(all_pred[n_cal + i]))
+            if interval["lower"] <= all_true[n_cal + i] <= interval["upper"]:
+                covered += 1
+        coverage = covered / n_test
+        assert coverage >= 0.80, f"Coverage {coverage:.2f} too low for 0.90 target"
+
+    def test_batch_predict(self):
+        from finpredict.evaluation.metrics import ConformalPredictor
+        cp = ConformalPredictor(target_coverage=0.90)
+        cp.calibrate(np.array([0.1, 0.2, 0.3, 0.4, 0.5] * 20),
+                     np.array([0, 0, 0, 1, 0] * 20))
+        intervals = cp.predict_intervals_batch(np.array([0.15, 0.35, 0.75]))
+        assert len(intervals) == 3
+        for iv in intervals:
+            assert "lower" in iv and "upper" in iv
+
+
+class TestRegimeConditionalBSS:
+    """M3: BSS stratified by regime."""
+
+    def test_regime_conditional_bss_returns_per_regime(self):
+        from finpredict.evaluation.metrics import regime_conditional_bss
+        rng = np.random.default_rng(42)
+        n = 200
+        y_true = (rng.uniform(0, 1, n) > 0.85).astype(float)
+        y_pred = np.clip(y_true + rng.normal(0, 0.2, n), 0, 1)
+        regimes = np.array(["Bull"] * 100 + ["Bear"] * 60 + ["Crisis"] * 40)
+        result = regime_conditional_bss(y_pred, y_true, regimes)
+        assert "overall_bss" in result
+        assert "bss_Bull" in result
+        assert "bss_Bear" in result
+        assert "n_Bull" in result
+        assert result["n_Bull"] == 100

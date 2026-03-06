@@ -13,9 +13,14 @@ Both use Platt scaling calibration, temporal weighting, and purged
 train/val splits to prevent data leakage.
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from typing import Optional
+
+from finpredict.config import config as _cfg
+
+logger = logging.getLogger(__name__)
 
 try:
     import xgboost as xgb
@@ -98,14 +103,16 @@ if _HAS_XGBOOST:
             pos_rate = float(y.mean())
             n_samples = len(X)
 
-            # Temporal weighting: recent data matters more
-            temporal_weights = np.linspace(0.5, 1.5, n_samples)
+            # Exponential temporal weighting from config
+            decay = _cfg.get("ml", {}).get("temporal_weight_decay", 0.0005)
+            temporal_weights = np.exp(-decay * (n_samples - np.arange(n_samples)))
             crash_transitions = np.abs(y.diff().fillna(0).values)
             transition_weight = 1.0 + crash_transitions * 2.0
             sample_weights = temporal_weights * transition_weight
 
-            # Purged split
-            gap_days = {"3m": 70, "6m": 140, "12m": 265}.get(horizon, 265)
+            # Purged split — gaps from config
+            purge_cfg = _cfg.get("ml", {}).get("purge_gaps", {"3m": 70, "6m": 140, "12m": 265})
+            gap_days = purge_cfg.get(horizon, purge_cfg.get("12m", 265))
             val_size = max(504, n_samples // 5)
             split_idx = n_samples - val_size - gap_days
 
@@ -242,7 +249,9 @@ else:
             return {"success": False, "reason": "XGBoost not installed"}
 
         def predict_proba(self, features, horizon: str = "12m"):
-            return np.full(len(features), 0.12)
+            base = _cfg.get("ml", {}).get("crash_base_rate_fallback", 0.12)
+            logger.warning("[WARN] XGBoost not installed, returning base rate %.2f", base)
+            return np.full(len(features), base)
 
         def predict_all_horizons(self, features):
             return {}

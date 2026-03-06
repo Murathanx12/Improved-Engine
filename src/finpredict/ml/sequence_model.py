@@ -32,9 +32,14 @@ DATA LEAKAGE PREVENTION:
     - No future targets leak into input construction
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from typing import Optional
+
+from finpredict.config import config as _cfg
+
+logger = logging.getLogger(__name__)
 
 try:
     import torch
@@ -352,8 +357,9 @@ if _HAS_TORCH:
             X_raw = X.values
             temporal_weights = np.linspace(0.5, 1.5, len(X_raw)).astype(np.float32)
 
-            # Purged train/val split
-            gap_days = 265  # Worst-case: 12m horizon
+            # Purged train/val split — gap from config
+            purge_cfg = _cfg.get("ml", {}).get("purge_gaps", {"12m": 265})
+            gap_days = purge_cfg.get("12m", 265)
             n_available = len(X_raw) - self.WINDOW_SIZE
             val_size = max(252, n_available // 5)
             split_point = len(X_raw) - val_size - gap_days - self.WINDOW_SIZE
@@ -562,7 +568,9 @@ if _HAS_TORCH:
                         preds.append(out[:, h_idx].cpu().numpy())
 
             if not preds:
-                return np.full(n_sequences, 0.12)
+                base = _cfg.get("ml", {}).get("crash_base_rate_fallback", 0.12)
+                logger.warning("[WARN] No temporal models available, returning base rate %.2f", base)
+                return np.full(n_sequences, base)
 
             # Average ensemble predictions
             ensemble = np.mean(preds, axis=0)
@@ -643,7 +651,13 @@ else:
 
         def predict_proba(self, features, horizon: str = "12m"):
             n = len(features) if hasattr(features, '__len__') else 1
-            return np.full(n, 0.12)
+            base = _cfg.get("ml", {}).get("crash_base_rate_fallback", 0.12)
+            logger.warning("[WARN] PyTorch not installed, returning base rate %.2f", base)
+            return np.full(n, base)
+
+        def predict_individual(self, features, horizon: str = "12m"):
+            result = {"lstm": None, "tcn": None}
+            return result
 
         def predict_all_horizons(self, features):
             return {}

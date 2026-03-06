@@ -206,6 +206,13 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
         vix3m = data["VIX3M"].ffill()
         df["vix_term_structure_ratio"] = data["VIX"].ffill() / vix3m.replace(0, np.nan)
         df["vix_backwardation"] = (df["vix_term_structure_ratio"] > 1.0).astype(float)
+        # N2: VIX term structure velocity and persistence
+        df["vix_ts_velocity_5d"] = df["vix_term_structure_ratio"].diff(5)
+        df["vix_ts_velocity_21d"] = df["vix_term_structure_ratio"].diff(21)
+        # Duration of backwardation (consecutive days)
+        backw = df["vix_backwardation"]
+        groups = (backw != backw.shift()).cumsum()
+        df["vix_backwardation_duration"] = backw.groupby(groups).cumsum()
 
     # SKEW Index: measures institutional demand for tail-risk hedging
     # SKEW > 145 = elevated crash protection buying
@@ -644,9 +651,32 @@ def _forward_max_drawdown(prices: pd.Series, days: int) -> pd.Series:
     return pd.Series(out, index=prices.index)
 
 
-def build_target_crash(data: pd.DataFrame, threshold: float = -0.2, horizon_days: int = 252) -> pd.Series:
-    """Boolean series indicating if a crash (drawdown <= threshold) occurs within horizon."""
+def build_target_crash(
+    data: pd.DataFrame,
+    threshold: float = -0.2,
+    horizon_days: int = 252,
+    dynamic_vix: bool = False,
+) -> pd.Series:
+    """Boolean series indicating if a crash (drawdown <= threshold) occurs within horizon.
+
+    If dynamic_vix=True and VIX is available, scale threshold by VIX regime:
+        effective_threshold = base * (vix_long_run / vix_current)
+    Low-vol regimes get a tighter threshold; high-vol regimes get a looser one.
+    """
+    from finpredict.config import config as _cfg
+
     mdd = _forward_max_drawdown(data["SP500"], horizon_days)
+
+    dyn_cfg = _cfg.get("ml", {}).get("dynamic_crash_threshold", {})
+    if dynamic_vix and dyn_cfg.get("enabled", False) and "VIX" in data.columns:
+        vix_avg = dyn_cfg.get("vix_long_run_avg", 20.0)
+        min_thresh = -dyn_cfg.get("min_threshold", 0.15)
+        max_thresh = -dyn_cfg.get("max_threshold", 0.30)
+        vix = data["VIX"].rolling(21).mean().ffill().bfill()
+        scale = vix_avg / vix.clip(lower=10.0)
+        dynamic_threshold = (threshold * scale).clip(upper=min_thresh, lower=max_thresh)
+        return mdd <= dynamic_threshold
+
     return mdd <= threshold
 
 
