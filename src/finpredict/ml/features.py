@@ -336,7 +336,19 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
             try:
                 s = pd.Series(series).astype(float)
                 s.index = pd.to_datetime(s.index)
-                s = s.reindex(df.index).ffill()
+                # For monthly FRED data, shift by ~21 trading days to
+                # account for publication lag (data not available until
+                # weeks after the reference period). Daily series (e.g.
+                # VIX, yields) have minimal lag and are not shifted.
+                if len(s) > 10:
+                    median_gap = s.index.to_series().diff().median()
+                    is_monthly = median_gap > pd.Timedelta(days=15)
+                else:
+                    is_monthly = False
+                s = s.reindex(df.index)
+                if is_monthly:
+                    s = s.shift(21)  # 21 trading days ≈ 1 month lag
+                s = s.ffill()
                 col = f"fred_{k}"
                 fred_cols[col] = s
                 # ── Rate-of-change derivatives (more predictive than raw levels) ──
@@ -456,20 +468,21 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
     # ═══════════════════════════════════════════════════════════════
 
     # 11.1 Equity Risk Premium (ERP)
-    # ERP = earnings yield (1/CAPE proxy) - real yield
+    # price_to_avg_ratio = price / 10-year average price (NOT true CAPE = P/E10)
+    # The inverse is used as a rough valuation signal: higher ratio = more expensive
     sp_10yr_avg = sp.rolling(2520, min_periods=1260).mean()
-    cape_proxy = sp / sp_10yr_avg.replace(0, np.nan)
-    earnings_yield = 1.0 / cape_proxy.replace(0, np.nan)
+    price_to_avg_ratio = sp / sp_10yr_avg.replace(0, np.nan)
+    inverse_valuation_ratio = 1.0 / price_to_avg_ratio.replace(0, np.nan)
 
     if "fred_tips_10y" in df.columns:
         real_yield = df["fred_tips_10y"] / 100
-        df["erp"] = earnings_yield - real_yield
+        df["erp"] = inverse_valuation_ratio - real_yield
     elif "fred_cpi" in df.columns and "yield_10y" in df.columns:
         inflation_proxy = df["fred_cpi"].pct_change(252)
         real_yield_proxy = df["yield_10y"] - inflation_proxy
-        df["erp"] = earnings_yield - real_yield_proxy
+        df["erp"] = inverse_valuation_ratio - real_yield_proxy
     else:
-        df["erp"] = earnings_yield - 0.02
+        df["erp"] = inverse_valuation_ratio - 0.02
 
     erp_mean = df["erp"].rolling(252).mean()
     erp_std = df["erp"].rolling(252).std()

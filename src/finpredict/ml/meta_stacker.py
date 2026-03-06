@@ -224,6 +224,12 @@ class MetaStacker:
         Returns:
             Calibrated ensemble crash probability.
         """
+        # Determine which models from training are actually available now
+        available_at_inference = [
+            m for m in self._available_models
+            if model_predictions.get(m) is not None
+        ]
+
         if not self.is_trained or horizon not in self.stackers:
             # Fallback: simple average of available predictions
             available = [
@@ -234,12 +240,22 @@ class MetaStacker:
                 return np.clip(np.mean(available), 0.02, 0.98)
             return np.array([0.12])
 
-        # Build meta-features
+        # If any model that was available during training is now missing,
+        # the stacker's learned weights are invalid — fall back to simple
+        # average of whatever models ARE available.
+        if set(available_at_inference) != set(self._available_models):
+            available = [
+                v for k, v in model_predictions.items()
+                if k in self.MODEL_NAMES and v is not None
+            ]
+            if available:
+                return np.clip(np.mean(available), 0.02, 0.98)
+            return np.array([0.12])
+
+        # Build meta-features (all training models guaranteed present)
         meta_features = []
         for model_name in self._available_models:
-            pred = model_predictions.get(model_name)
-            if pred is None:
-                pred = 0.12  # Default
+            pred = model_predictions[model_name]
             meta_features.append(float(pred) if np.isscalar(pred) else float(pred[0]))
 
         # Add regime probabilities
@@ -249,8 +265,8 @@ class MetaStacker:
                 meta_features.append(rp[i])
 
             # Add interaction features
-            for i, model_name in enumerate(self._available_models):
-                pred = model_predictions.get(model_name, 0.12)
+            for model_name in self._available_models:
+                pred = model_predictions[model_name]
                 pred_val = float(pred) if np.isscalar(pred) else float(pred[0])
                 if len(rp) >= 2:
                     meta_features.append(pred_val * rp[1])  # pred * p_bear
@@ -259,7 +275,7 @@ class MetaStacker:
             for _ in range(3):
                 meta_features.append(0.33)
             for model_name in self._available_models:
-                pred = model_predictions.get(model_name, 0.12)
+                pred = model_predictions[model_name]
                 pred_val = float(pred) if np.isscalar(pred) else float(pred[0])
                 meta_features.append(pred_val * 0.33)
 

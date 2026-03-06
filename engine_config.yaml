@@ -82,6 +82,9 @@ data:
 # ── ML SETTINGS ────────────────────────────────────────────────────────────────
 ml:
   crash_base_rate_fallback: 0.12    # Fallback if empirical crash rate unavailable
+  lookup_table_blend:
+    divergence_threshold: 0.15      # Blend when |ML - lookup| > this (set 1.0 to disable)
+    blend_ratio: 0.5                # Weight on lookup table when blending (0 = pure ML)
 
 
 # ── VALIDATION SETTINGS ─────────────────────────────────────────────────────────

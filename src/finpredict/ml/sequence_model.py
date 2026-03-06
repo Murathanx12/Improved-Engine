@@ -398,7 +398,10 @@ if _HAS_TORCH:
             if len(train_ds) < min_sequences // 2 or len(val_ds) < 50:
                 return {"success": False, "reason": f"Insufficient sequences: train={len(train_ds)}, val={len(val_ds)}"}
 
-            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+            train_loader = DataLoader(
+                train_ds, batch_size=batch_size, shuffle=True,
+                generator=torch.Generator().manual_seed(self.random_state),
+            )
             val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
             n_horizons = len(avail_horizons)
@@ -601,7 +604,7 @@ if _HAS_TORCH:
                         out = model(x_tensor)
                         result[name] = np.clip(out[:, h_idx].cpu().numpy(), 0.02, 0.98)
                 else:
-                    result[name] = np.full(n_sequences, 0.12)
+                    result[name] = None
 
             return result
 

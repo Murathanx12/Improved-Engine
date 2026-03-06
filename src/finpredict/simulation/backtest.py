@@ -230,22 +230,28 @@ def run_backtest(
                 if len(seq_features) >= temporal_model.WINDOW_SIZE:
                     try:
                         indiv = temporal_model.predict_individual(seq_features, "12m")
-                        lstm_crash_12m = float(indiv["lstm"][-1])
-                        tcn_crash_12m = float(indiv["tcn"][-1])
+                        if indiv.get("lstm") is not None:
+                            lstm_crash_12m = float(indiv["lstm"][-1])
+                        if indiv.get("tcn") is not None:
+                            tcn_crash_12m = float(indiv["tcn"][-1])
                     except Exception:
                         temporal_preds = temporal_model.predict_proba(seq_features, "12m")
                         lstm_crash_12m = float(temporal_preds[-1])
                         tcn_crash_12m = lstm_crash_12m
                     try:
                         indiv_6m = temporal_model.predict_individual(seq_features, "6m")
-                        lstm_crash_6m = float(indiv_6m["lstm"][-1])
-                        tcn_crash_6m = float(indiv_6m["tcn"][-1])
+                        if indiv_6m.get("lstm") is not None:
+                            lstm_crash_6m = float(indiv_6m["lstm"][-1])
+                        if indiv_6m.get("tcn") is not None:
+                            tcn_crash_6m = float(indiv_6m["tcn"][-1])
                     except Exception:
                         pass
                     try:
                         indiv_3m = temporal_model.predict_individual(seq_features, "3m")
-                        lstm_crash_3m = float(indiv_3m["lstm"][-1])
-                        tcn_crash_3m = float(indiv_3m["tcn"][-1])
+                        if indiv_3m.get("lstm") is not None:
+                            lstm_crash_3m = float(indiv_3m["lstm"][-1])
+                        if indiv_3m.get("tcn") is not None:
+                            tcn_crash_3m = float(indiv_3m["tcn"][-1])
                     except Exception:
                         pass
 
@@ -267,18 +273,18 @@ def run_backtest(
             # Collect 6m and 3m OOS predictions for multi-horizon meta-stacker
             if lgb_crash_6m is not None:
                 oos_predictions["lgb"]["6m"].append(lgb_crash_6m)
-                oos_predictions["xgb"]["6m"].append(
-                    float(xgb_model.predict_proba(current_features, "6m")[0])
-                    if xgb_model.is_trained and "6m" in xgb_model.models else lgb_crash_6m
-                )
+                xgb_6m = None
+                if xgb_model.is_trained and "6m" in xgb_model.models:
+                    xgb_6m = float(xgb_model.predict_proba(current_features, "6m")[0])
+                oos_predictions["xgb"]["6m"].append(xgb_6m)
                 oos_predictions["lstm"]["6m"].append(lstm_crash_6m)
                 oos_predictions["tcn"]["6m"].append(tcn_crash_6m)
             if lgb_crash_3m is not None:
                 oos_predictions["lgb"]["3m"].append(lgb_crash_3m)
-                oos_predictions["xgb"]["3m"].append(
-                    float(xgb_model.predict_proba(current_features, "3m")[0])
-                    if xgb_model.is_trained and "3m" in xgb_model.models else lgb_crash_3m
-                )
+                xgb_3m = None
+                if xgb_model.is_trained and "3m" in xgb_model.models:
+                    xgb_3m = float(xgb_model.predict_proba(current_features, "3m")[0])
+                oos_predictions["xgb"]["3m"].append(xgb_3m)
                 oos_predictions["lstm"]["3m"].append(lstm_crash_3m)
                 oos_predictions["tcn"]["3m"].append(tcn_crash_3m)
 
@@ -286,9 +292,9 @@ def run_backtest(
             if meta_stacker.is_trained:
                 model_preds = {
                     "lgb": lgb_crash_12m,
-                    "xgb": xgb_crash_12m if xgb_crash_12m is not None else lgb_crash_12m,
-                    "lstm": lstm_crash_12m if lstm_crash_12m is not None else lgb_crash_12m,
-                    "tcn": tcn_crash_12m if tcn_crash_12m is not None else lgb_crash_12m,
+                    "xgb": xgb_crash_12m,
+                    "lstm": lstm_crash_12m,
+                    "tcn": tcn_crash_12m,
                 }
                 ml_crash_12m = float(meta_stacker.predict_proba(model_preds, horizon="12m")[0])
             else:
