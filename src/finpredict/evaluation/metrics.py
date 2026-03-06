@@ -472,3 +472,106 @@ def signal_max_drawdown(
         "total_return": float(total_return),
         "sharpe": float(sharpe),
     }
+
+
+def regime_conditional_bss(
+    y_pred: np.ndarray,
+    y_true: np.ndarray,
+    regimes: np.ndarray,
+) -> dict:
+    """M3: Compute BSS stratified by regime label.
+
+    Args:
+        y_pred: Predicted crash probabilities.
+        y_true: Binary crash outcomes.
+        regimes: Regime labels aligned with predictions (e.g., "Bull", "Bear", "Crisis").
+
+    Returns:
+        Dict with overall BSS and per-regime BSS/count.
+    """
+    y_pred = np.asarray(y_pred, dtype=float)
+    y_true = np.asarray(y_true, dtype=float)
+    regimes = np.asarray(regimes)
+
+    result = {"overall_bss": brier_skill_score(y_pred, y_true)}
+
+    for regime in np.unique(regimes):
+        mask = regimes == regime
+        n = int(mask.sum())
+        if n < 10 or len(np.unique(y_true[mask])) < 2:
+            result[f"bss_{regime}"] = float("nan")
+            result[f"n_{regime}"] = n
+            continue
+        result[f"bss_{regime}"] = brier_skill_score(y_pred[mask], y_true[mask])
+        result[f"n_{regime}"] = n
+
+    return result
+
+
+class ConformalPredictor:
+    """N3: Split conformal prediction for coverage-guaranteed crash intervals.
+
+    Given calibration residuals, produces prediction intervals with
+    finite-sample coverage guarantees (Vovk et al., 2005).
+
+    Usage:
+        cp = ConformalPredictor(target_coverage=0.90)
+        cp.calibrate(cal_predictions, cal_true_labels)
+        interval = cp.predict_interval(new_prediction)
+        # interval = {"lower": 0.15, "upper": 0.45, "coverage": 0.90}
+    """
+
+    def __init__(self, target_coverage: float = 0.90):
+        self.target_coverage = target_coverage
+        self._quantile = None
+        self._calibrated = False
+
+    def calibrate(self, cal_pred: np.ndarray, cal_true: np.ndarray) -> None:
+        """Compute conformal quantile from calibration residuals.
+
+        Args:
+            cal_pred: Calibration set predicted probabilities.
+            cal_true: Calibration set true binary labels.
+        """
+        cal_pred = np.asarray(cal_pred, dtype=float)
+        cal_true = np.asarray(cal_true, dtype=float)
+        n = len(cal_pred)
+        if n < 10:
+            self._quantile = 0.5  # fallback
+            self._calibrated = True
+            return
+
+        # Nonconformity scores: absolute residuals
+        scores = np.abs(cal_pred - cal_true)
+
+        # Conformal quantile with finite-sample correction
+        q_level = np.ceil((n + 1) * self.target_coverage) / n
+        q_level = min(q_level, 1.0)
+        self._quantile = float(np.quantile(scores, q_level))
+        self._calibrated = True
+
+    def predict_interval(self, point_pred: float) -> dict:
+        """Produce a prediction interval around a point prediction.
+
+        Args:
+            point_pred: The model's point probability prediction.
+
+        Returns:
+            Dict with lower, upper bounds and target coverage.
+        """
+        if not self._calibrated:
+            raise RuntimeError("Must call calibrate() before predict_interval()")
+
+        lower = max(0.0, point_pred - self._quantile)
+        upper = min(1.0, point_pred + self._quantile)
+
+        return {
+            "lower": float(lower),
+            "upper": float(upper),
+            "point": float(point_pred),
+            "coverage": self.target_coverage,
+        }
+
+    def predict_intervals_batch(self, predictions: np.ndarray) -> list:
+        """Produce intervals for a batch of predictions."""
+        return [self.predict_interval(float(p)) for p in np.asarray(predictions)]

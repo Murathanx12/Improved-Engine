@@ -5,7 +5,9 @@ import pandas as pd
 import pytest
 
 from finpredict.validation.regime_validator import validate_regime, RegimeValidation
-from finpredict.validation.external_validator import validate_external, ExternalValidation
+from finpredict.validation.external_validator import (
+    validate_external, ExternalValidation, composite_confidence_score,
+)
 
 
 @pytest.fixture
@@ -195,3 +197,26 @@ class TestExternalValidation:
         # Should have a divergence alert
         fed_alerts = [a for a in result.divergence_alerts if "Fed" in a or "dovish" in a.lower()]
         assert len(fed_alerts) > 0, "Expected Fed divergence alert when market is near highs"
+
+
+class TestCompositeConfidenceScore:
+    """M5: Composite confidence score combining external + ML + ensemble."""
+
+    def test_composite_score_bounded(self):
+        val = ExternalValidation(engine_agreement=0.8)
+        result = composite_confidence_score(val, ml_crash_prob=0.75, ensemble_std=0.05)
+        assert 0.0 <= result["composite_confidence"] <= 1.0
+        assert "external_agreement" in result
+        assert "ml_confidence" in result
+        assert "ensemble_agreement" in result
+
+    def test_high_confidence_when_all_agree(self):
+        val = ExternalValidation(engine_agreement=1.0)
+        result = composite_confidence_score(val, ml_crash_prob=0.90, ensemble_std=0.01)
+        assert result["composite_confidence"] > 0.7
+
+    def test_low_confidence_when_uncertain(self):
+        val = ExternalValidation(engine_agreement=0.2, divergence_alerts=["alert1", "alert2"])
+        result = composite_confidence_score(val, ml_crash_prob=0.50, ensemble_std=0.15)
+        assert result["composite_confidence"] < 0.5
+        assert result["n_divergence_alerts"] == 2

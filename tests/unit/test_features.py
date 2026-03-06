@@ -137,6 +137,18 @@ class TestERPFeatures:
         vals = features["erp_below_1pct"].unique()
         assert set(vals).issubset({0.0, 1.0})
 
+    def test_cape_proxy_renamed_to_price_to_avg_ratio(self):
+        """B8: The feature should be named price_to_avg_ratio, not cape_proxy."""
+        import inspect
+        from finpredict.ml import features as feat_mod
+        source = inspect.getsource(feat_mod.build_feature_matrix)
+        assert "price_to_avg_ratio" in source, (
+            "Should use 'price_to_avg_ratio' instead of misleading 'cape_proxy'"
+        )
+        assert "cape_proxy" not in source, (
+            "Should NOT use 'cape_proxy' — it's not a real CAPE calculation"
+        )
+
 
 class TestFracDiffFeatures:
     """Tests for fractionally differentiated price features (Section 11.8)."""
@@ -198,6 +210,12 @@ class TestNearTermSignals:
         assert "vix_backwardation_duration" in features.columns
         assert "vix_backwardation_5d_pct" in features.columns
         assert "vix_backwardation_21d_pct" in features.columns
+
+    def test_vix_ts_velocity_features(self, sample_data_with_etfs):
+        """N2: VIX term structure velocity and persistence features."""
+        features = build_feature_matrix(sample_data_with_etfs)
+        assert "vix_ts_velocity_5d" in features.columns
+        assert "vix_ts_velocity_21d" in features.columns
 
     def test_smart_money_proxy(self, sample_data):
         """Russell is in sample_data → small_large_ratio → smart_money_proxy."""
@@ -261,6 +279,33 @@ class TestFREDFeatures:
         assert "business_loans_yoy" in features.columns
         assert "business_loans_accel_3m" in features.columns
         assert "credit_crunch_signal" in features.columns
+
+    def test_fred_monthly_data_shifted_for_publication_lag(self):
+        """B9: Monthly FRED data must be shifted by ~21 trading days for publication lag."""
+        import inspect
+        from finpredict.ml import features as feat_mod
+        source = inspect.getsource(feat_mod.build_feature_matrix)
+        # Must detect monthly data and shift it
+        assert "is_monthly" in source, "Should detect monthly FRED series"
+        assert "shift(21)" in source, "Monthly FRED data should be shifted by 21 trading days"
+
+
+class TestDynamicCrashThreshold:
+    """M2: VIX-scaled crash threshold for regime-aware labeling."""
+
+    def test_dynamic_threshold_signature(self):
+        """build_target_crash should accept dynamic_vix parameter."""
+        import inspect
+        from finpredict.ml.features import build_target_crash
+        sig = inspect.signature(build_target_crash)
+        assert "dynamic_vix" in sig.parameters, "build_target_crash must have dynamic_vix param"
+
+    def test_dynamic_threshold_config_exists(self):
+        from finpredict.config import config as cfg
+        dyn = cfg.get("ml", {}).get("dynamic_crash_threshold", {})
+        assert "vix_long_run_avg" in dyn
+        assert "min_threshold" in dyn
+        assert "max_threshold" in dyn
 
 
 class TestFeatureCount:

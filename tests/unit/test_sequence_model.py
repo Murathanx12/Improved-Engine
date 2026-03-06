@@ -259,6 +259,38 @@ class TestTemporalEnsemble:
             assert 0.02 <= lstm_12m <= 0.98
 
 
+class TestSequenceModelNoHardcoded012:
+    """B2: predict_individual must return None for missing models, not 0.12."""
+
+    def test_predict_individual_returns_none_for_missing(self):
+        """When LSTM or TCN is None, predict_individual should return None."""
+        from finpredict.ml.sequence_model import TemporalEnsemble
+        model = TemporalEnsemble()
+        # Untrained model should return None for both
+        result = model.predict_individual(pd.DataFrame(np.random.randn(65, 10)), "12m")
+        assert result["lstm"] is None, "Missing LSTM should return None"
+        assert result["tcn"] is None, "Missing TCN should return None"
+
+    def test_predict_proba_fallback_uses_config(self):
+        """predict_proba fallback should use config base rate, not hardcoded 0.12."""
+        import inspect
+        from finpredict.ml.sequence_model import TemporalEnsemble
+        source = inspect.getsource(TemporalEnsemble.predict_proba)
+        assert "crash_base_rate_fallback" in source, (
+            "predict_proba should use config crash_base_rate_fallback, not hardcoded 0.12"
+        )
+
+    def test_xgb_fallback_uses_config(self):
+        """XGB fallback class should use config base rate, not hardcoded 0.12."""
+        import inspect
+        from finpredict.ml.xgboost_model import XGBoostCrashPredictor
+        # Check if XGBoost is available by checking if predict_proba uses config
+        source = inspect.getsource(XGBoostCrashPredictor.predict_proba)
+        assert "0.12" not in source or "crash_base_rate_fallback" in source, (
+            "XGB predict_proba should use config fallback, not hardcoded 0.12"
+        )
+
+
 class TestCrashSequenceDataset:
 
     def test_dataset_construction(self):
