@@ -84,6 +84,12 @@ src/finpredict/
 | **pip**     | latest  | Comes with Python |
 | **Git**     | any     | For cloning the repo |
 | **VS Code** | latest  | Recommended editor (optional) |
+| **Make**    | any     | For `make` shortcuts (optional -- see below) |
+
+> **Windows users:** `make` is not installed by default. You can either:
+> - Install it via [Chocolatey](https://chocolatey.org/): `choco install make`
+> - Install it via [Scoop](https://scoop.sh/): `scoop install make`
+> - Or skip `make` entirely and use the raw `python` commands shown in [Common Commands](#common-commands)
 
 You will also need **free API keys** from:
 
@@ -314,20 +320,21 @@ Improved-Engine/
 
 ## Common Commands
 
-All commands assume the virtual environment is activated.
+All commands assume the virtual environment is activated. You can use either the `make` shortcuts or the raw `python` commands.
 
-| Command | Description |
-|---------|-------------|
-| `python -m finpredict.main` | Run the full engine pipeline |
-| `python test_setup.py` | Verify setup (packages, config, API keys) |
-| `make run` | Shortcut to run the engine |
-| `make test` | Run all tests with pytest |
-| `make coverage` | Run tests with coverage report |
-| `make lint` | Lint code with ruff |
-| `make check` | Verify setup (same as `python test_setup.py`) |
-| `make clean` | Remove caches, build artifacts, cached data |
-| `make refresh` | Force re-fetch all market data (ignore cache) |
-| `make setup` | First-time setup (install + verify) |
+| Task | With Make | Without Make (raw command) |
+|------|-----------|--------------------------|
+| **Run the engine** | `make run` | `python -m finpredict.main` |
+| **First-time setup** | `make setup` | `pip install -e ".[dev]" && python test_setup.py` |
+| **Install dependencies** | `make install` | `pip install -e ".[dev]"` |
+| **Verify setup** | `make check` | `python test_setup.py` |
+| **Run tests** | `make test` | `pytest tests/ -v --tb=short` |
+| **Run tests + coverage** | `make coverage` | `pytest tests/ -v --cov=finpredict --cov-report=term-missing` |
+| **Lint code** | `make lint` | `ruff check src/ tests/` |
+| **Clean caches** | `make clean` | _(manually delete `__pycache__`, `.pytest_cache`, `data_cache/*.parquet`)_ |
+| **Force data refresh** | `make refresh` | `python -c "from finpredict.data import cached_fetch_all_data; cached_fetch_all_data(force_refresh=True)"` |
+
+> **Note:** `make run` sets `PYTHONPATH=src` automatically, so it works even without `pip install -e .`. If you run `python -m finpredict.main` directly, you must either install the package first or set `PYTHONPATH=src` yourself.
 
 ### Running Tests
 
@@ -357,9 +364,14 @@ ruff check src/ tests/
 
 ### `ModuleNotFoundError: No module named 'finpredict'`
 
-Make sure you installed in editable mode:
+Either install the package in editable mode:
 ```bash
 pip install -e ".[dev]"
+```
+
+Or use `make run` which sets `PYTHONPATH` automatically (no install needed):
+```bash
+make run
 ```
 
 ### PowerShell execution policy error on Windows
