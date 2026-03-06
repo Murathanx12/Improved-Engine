@@ -456,7 +456,14 @@ def signal_max_drawdown(
     total_return = cumulative - 1.0
     if period_returns:
         arr = np.array(period_returns)
-        sharpe = (arr.mean() / arr.std() * np.sqrt(4)) if arr.std() > 0 else 0.0
+        # Annualize based on number of observations per year
+        # bt_sorted has step_months spacing between rows; infer from data
+        if len(bt_sorted) >= 2:
+            avg_days = (bt_sorted["date"].iloc[-1] - bt_sorted["date"].iloc[0]).days / max(len(bt_sorted) - 1, 1)
+            n_periods_per_year = max(1, 365.25 / avg_days)
+        else:
+            n_periods_per_year = 4  # default quarterly
+        sharpe = (arr.mean() / arr.std() * np.sqrt(n_periods_per_year)) if arr.std() > 0 else 0.0
     else:
         sharpe = 0.0
 

@@ -81,6 +81,16 @@ def identify_crashes(
                 })
                 in_crash = False
 
+    # Capture ongoing crash at dataset end (no recovery yet)
+    if in_crash:
+        crashes.append({
+            "start": crash_start,
+            "end": data.index[-1],
+            "max_dd": crash_min,
+            "duration_days": (data.index[-1] - crash_start).days,
+            "severity": "Ongoing",
+        })
+
     crash_df = pd.DataFrame(crashes)
     years = (data.index[-1] - data.index[0]).days / 365.25
     freq = len(crashes) / years if years > 0 else 0.05

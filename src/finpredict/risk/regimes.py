@@ -57,7 +57,7 @@ def detect_regimes(data: pd.DataFrame, window: int = 252) -> tuple[pd.Series, st
             continue
 
         ann_ret = w.mean() * 252    # Geometric annualized return
-        ann_vol = returns.loc[date_window].std() * np.sqrt(252)
+        ann_vol = w.std() * np.sqrt(252)  # Use log returns for consistency with ann_ret
 
         # Base classification (price-based)
         # Added "Neutral" regime: non-negative returns with moderate vol

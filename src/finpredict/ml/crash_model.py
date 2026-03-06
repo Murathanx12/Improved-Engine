@@ -586,12 +586,17 @@ if _HAS_LIGHTGBM:
 
             # ── Lookup table sanity check ──────────────────────────────
             # When model prediction diverges from empirical base rates by
-            # >15pp, blend 50/50 to prevent extreme miscalibration
+            # more than the configured threshold, blend with lookup table.
+            # Set divergence_threshold to 1.0 in config to effectively disable.
             if isinstance(features, pd.DataFrame):
+                from finpredict.config import config as _cfg
+                lt_cfg = _cfg.get("ml", {}).get("lookup_table_blend", {})
+                divergence_threshold = lt_cfg.get("divergence_threshold", 0.15)
+                blend_ratio = lt_cfg.get("blend_ratio", 0.5)
                 lookup_prob = self._lookup_table_prob(features)
                 for i in range(len(calibrated)):
-                    if abs(calibrated[i] - lookup_prob) > 0.15:
-                        calibrated[i] = 0.5 * calibrated[i] + 0.5 * lookup_prob
+                    if abs(calibrated[i] - lookup_prob) > divergence_threshold:
+                        calibrated[i] = (1 - blend_ratio) * calibrated[i] + blend_ratio * lookup_prob
 
             return np.clip(calibrated, 0.02, 0.98)
 

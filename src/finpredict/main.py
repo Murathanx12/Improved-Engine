@@ -275,8 +275,10 @@ def main():
                 if len(seq_features) >= temporal_model.WINDOW_SIZE:
                     try:
                         indiv = temporal_model.predict_individual(seq_features, "12m")
-                        lstm_crash_12m = float(indiv["lstm"][-1])
-                        tcn_crash_12m = float(indiv["tcn"][-1])
+                        if indiv.get("lstm") is not None:
+                            lstm_crash_12m = float(indiv["lstm"][-1])
+                        if indiv.get("tcn") is not None:
+                            tcn_crash_12m = float(indiv["tcn"][-1])
                     except Exception:
                         temporal_preds = temporal_model.predict_proba(seq_features, "12m")
                         lstm_crash_12m = float(temporal_preds[-1])
@@ -286,9 +288,9 @@ def main():
             if meta_stacker and meta_stacker.is_trained:
                 model_preds = {
                     "lgb": lgb_crash_12m,
-                    "xgb": xgb_crash_12m if xgb_crash_12m is not None else lgb_crash_12m,
-                    "lstm": lstm_crash_12m if lstm_crash_12m is not None else lgb_crash_12m,
-                    "tcn": tcn_crash_12m if tcn_crash_12m is not None else lgb_crash_12m,
+                    "xgb": xgb_crash_12m,
+                    "lstm": lstm_crash_12m,
+                    "tcn": tcn_crash_12m,
                 }
                 regime_probs_arr = hmm_result.regime_probs if hmm_result.success else None
                 ml_crash_prob = float(meta_stacker.predict_proba(

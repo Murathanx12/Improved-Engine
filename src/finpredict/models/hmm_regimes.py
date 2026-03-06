@@ -35,6 +35,8 @@ class HMMResult(NamedTuple):
     state_means: np.ndarray          # Mean of each state
     state_vols: np.ndarray           # Volatility of each state
     success: bool
+    feature_mean: np.ndarray = None  # Standardization mean for scoring new data
+    feature_std: np.ndarray = None   # Standardization std for scoring new data
 
 
 def fit_hmm_regimes(
@@ -194,6 +196,8 @@ def fit_hmm_regimes(
         state_means=np.array(state_mean_returns),
         state_vols=np.array(state_mean_vols),
         success=True,
+        feature_mean=X_mean,
+        feature_std=X_std,
     )
 
 
