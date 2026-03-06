@@ -252,7 +252,7 @@ Key sections in `engine_config.yaml`:
 
 | Output | Description |
 |--------|-------------|
-| **Crash probability curves** | 3-month, 6-month, and 12-month crash probability estimates |
+| **Crash probability curves** | 3-month, 6-month, 12-month, and 60-month crash probability estimates |
 | **Expected return predictions** | Point estimate + [P10, P90] quantile range |
 | **5-year S&P 500 projection** | ML-conditioned Monte Carlo with 90% confidence interval |
 | **8-scenario Monte Carlo** | Dynamic probability adjustment based on current regime |
