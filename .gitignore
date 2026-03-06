@@ -1,30 +1,53 @@
-# Environment
+# ── Environment & Secrets ─────────────────────────────────────
 .env
-.venv/
-venv/
+.env.local
+.env.*.local
 
-# Python
+# ── Python ───────────────────────────────────────────────────
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 *.egg-info/
+*.egg
 dist/
 build/
-*.egg
+*.whl
+.eggs/
 
-# IDE
+# ── Virtual Environments ─────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── IDE / Editor ─────────────────────────────────────────────
 .vscode/settings.json
 .idea/
 *.swp
 *.swo
+*~
+.project
+.classpath
+.settings/
 
-# Project
+# ── Testing & Linting ───────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ── Jupyter ──────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Project Outputs ──────────────────────────────────────────
 data_cache/
 reports/*.pdf
 *.parquet
 *.log
-.ipynb_checkpoints/
 
-# OS
+# ── OS Files ─────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+Desktop.ini
