@@ -166,9 +166,17 @@ def run_backtest(
                 stacker_preds = {}
                 for model_name in ["lgb", "xgb", "lstm", "tcn"]:
                     if oos_predictions[model_name]:
-                        stacker_preds[model_name] = {
-                            h: np.array(v) for h, v in oos_predictions[model_name].items()
-                        }
+                        model_horizons = {}
+                        for h, v in oos_predictions[model_name].items():
+                            arr = np.array(v, dtype=float)
+                            # Replace None (now NaN) with NaN — MetaStacker's
+                            # NaN row filter handles partial availability
+                            model_horizons[h] = arr
+                        stacker_preds[model_name] = model_horizons
+                # For tree models (lgb, xgb), they're always available so
+                # rows are kept. LSTM/TCN None entries become NaN — the
+                # MetaStacker skips those rows only for horizons where
+                # LSTM/TCN columns are included.
                 stacker_targets = {h: np.array(v) for h, v in oos_targets.items()}
                 rp_arr = np.array(oos_regime_probs) if oos_regime_probs else None
                 meta_stacker.train(stacker_preds, rp_arr, stacker_targets)
@@ -209,9 +217,13 @@ def run_backtest(
             if xgb_model.is_trained:
                 xgb_crash_12m = float(xgb_model.predict_proba(current_features, "12m")[0])
 
-            # LSTM + TCN individual predictions
+            # LSTM + TCN individual predictions (per-horizon)
             lstm_crash_12m = None
             tcn_crash_12m = None
+            lstm_crash_6m = None
+            tcn_crash_6m = None
+            lstm_crash_3m = None
+            tcn_crash_3m = None
             if temporal_model.is_trained:
                 seq_start = max(0, idx - temporal_model.WINDOW_SIZE + 1)
                 seq_features = features.iloc[seq_start:idx+1]
@@ -224,6 +236,18 @@ def run_backtest(
                         temporal_preds = temporal_model.predict_proba(seq_features, "12m")
                         lstm_crash_12m = float(temporal_preds[-1])
                         tcn_crash_12m = lstm_crash_12m
+                    try:
+                        indiv_6m = temporal_model.predict_individual(seq_features, "6m")
+                        lstm_crash_6m = float(indiv_6m["lstm"][-1])
+                        tcn_crash_6m = float(indiv_6m["tcn"][-1])
+                    except Exception:
+                        pass
+                    try:
+                        indiv_3m = temporal_model.predict_individual(seq_features, "3m")
+                        lstm_crash_3m = float(indiv_3m["lstm"][-1])
+                        tcn_crash_3m = float(indiv_3m["tcn"][-1])
+                    except Exception:
+                        pass
 
             # Collect OOS predictions for meta-stacker training
             oos_indices.append(idx)
@@ -236,9 +260,9 @@ def run_backtest(
                     oos_targets[h] = []
 
             oos_predictions["lgb"]["12m"].append(lgb_crash_12m)
-            oos_predictions["xgb"]["12m"].append(xgb_crash_12m if xgb_crash_12m is not None else 0.12)
-            oos_predictions["lstm"]["12m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
-            oos_predictions["tcn"]["12m"].append(tcn_crash_12m if tcn_crash_12m is not None else 0.12)
+            oos_predictions["xgb"]["12m"].append(xgb_crash_12m)
+            oos_predictions["lstm"]["12m"].append(lstm_crash_12m)
+            oos_predictions["tcn"]["12m"].append(tcn_crash_12m)
 
             # Collect 6m and 3m OOS predictions for multi-horizon meta-stacker
             if lgb_crash_6m is not None:
@@ -247,16 +271,16 @@ def run_backtest(
                     float(xgb_model.predict_proba(current_features, "6m")[0])
                     if xgb_model.is_trained and "6m" in xgb_model.models else lgb_crash_6m
                 )
-                oos_predictions["lstm"]["6m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
-                oos_predictions["tcn"]["6m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
+                oos_predictions["lstm"]["6m"].append(lstm_crash_6m)
+                oos_predictions["tcn"]["6m"].append(tcn_crash_6m)
             if lgb_crash_3m is not None:
                 oos_predictions["lgb"]["3m"].append(lgb_crash_3m)
                 oos_predictions["xgb"]["3m"].append(
                     float(xgb_model.predict_proba(current_features, "3m")[0])
                     if xgb_model.is_trained and "3m" in xgb_model.models else lgb_crash_3m
                 )
-                oos_predictions["lstm"]["3m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
-                oos_predictions["tcn"]["3m"].append(lstm_crash_12m if lstm_crash_12m is not None else 0.12)
+                oos_predictions["lstm"]["3m"].append(lstm_crash_3m)
+                oos_predictions["tcn"]["3m"].append(tcn_crash_3m)
 
             # Meta-stacker ensemble prediction
             if meta_stacker.is_trained:

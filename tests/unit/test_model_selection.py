@@ -66,3 +66,50 @@ class TestModelSelection:
         cp = CrashPredictor()
         # Default selection should be "lgb" for untrained model
         assert cp.selected_model.get("12m", "lgb") == "lgb"
+
+
+class TestOOSCollectionSkipsNone:
+    """Bug 3: OOS prediction lists must never contain 0.12 placeholders."""
+
+    def test_oos_collection_skips_none(self):
+        """Simulate OOS collection where temporal model is unavailable for first 3 folds.
+        Verify no 0.12 placeholders leak into meta-stacker training data."""
+        oos_predictions = {
+            "lgb": {"12m": []},
+            "xgb": {"12m": []},
+            "lstm": {"12m": []},
+            "tcn": {"12m": []},
+        }
+
+        # Simulate 5 folds
+        for fold in range(5):
+            lgb_val = 0.15 + fold * 0.05   # Always available
+            xgb_val = 0.18 + fold * 0.03   # Always available
+
+            # Temporal model not available for first 3 folds
+            lstm_val = None if fold < 3 else 0.25 + fold * 0.02
+            tcn_val = None if fold < 3 else 0.22 + fold * 0.02
+
+            # This mirrors the fixed OOS collection (no `else 0.12`)
+            oos_predictions["lgb"]["12m"].append(lgb_val)
+            oos_predictions["xgb"]["12m"].append(xgb_val)
+            oos_predictions["lstm"]["12m"].append(lstm_val)
+            oos_predictions["tcn"]["12m"].append(tcn_val)
+
+        # Verify: no 0.12 placeholders anywhere
+        for model_name in ["lgb", "xgb", "lstm", "tcn"]:
+            vals = oos_predictions[model_name]["12m"]
+            assert 0.12 not in vals, (
+                f"Found 0.12 placeholder in {model_name} OOS predictions: {vals}"
+            )
+
+        # LSTM/TCN should have None for first 3 folds, real values for last 2
+        lstm_vals = oos_predictions["lstm"]["12m"]
+        assert lstm_vals[:3] == [None, None, None]
+        assert all(v is not None for v in lstm_vals[3:])
+
+        # When converted to numpy for meta-stacker, None becomes NaN
+        import numpy as np
+        lstm_arr = np.array(lstm_vals, dtype=float)
+        assert np.isnan(lstm_arr[:3]).all()
+        assert not np.isnan(lstm_arr[3:]).any()

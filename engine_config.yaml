@@ -79,6 +79,11 @@ data:
     sloos_cc: DRTSCLCC                # Senior Loan Officer Survey: credit card tightening
 
 
+# ── ML SETTINGS ────────────────────────────────────────────────────────────────
+ml:
+  crash_base_rate_fallback: 0.12    # Fallback if empirical crash rate unavailable
+
+
 # ── VALIDATION SETTINGS ─────────────────────────────────────────────────────────
 validation:
   regime_confirmation:

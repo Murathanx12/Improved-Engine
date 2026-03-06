@@ -429,7 +429,10 @@ def main():
                     # Reduce confidence in ML predictions when extrapolating
                     if ml_crash_prob is not None:
                         conf_factor = anomaly_report['confidence_factor']
-                        base_rate = 0.12  # Historical crash base rate
+                        base_rate = crash_model._train_crash_rate.get(
+                            "12m",
+                            config.get("ml", {}).get("crash_base_rate_fallback", 0.12),
+                        )
                         adjusted = ml_crash_prob * conf_factor + base_rate * (1 - conf_factor)
                         print(f"  [ANOMALY] Crash prob adjusted: {ml_crash_prob*100:.1f}% "
                               f"-> {adjusted*100:.1f}% (confidence factor: {conf_factor:.2f})")
@@ -515,7 +518,7 @@ def main():
                 alt_data["fed_futures"] = None
 
             external_validation = validate_external(
-                fred_data, ml_crash_prob, current_regime, alt_data=alt_data,
+                fred_data, ml_crash_prob, current_regime, data=data, alt_data=alt_data,
             )
             print(f"  [VALIDATION] External agreement: "
                   f"{external_validation.engine_agreement:.0%}")

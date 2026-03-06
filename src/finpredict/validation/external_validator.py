@@ -46,6 +46,7 @@ def validate_external(
     fred_data: dict,
     ml_crash_prob: Optional[float],
     current_regime: str,
+    data: Optional[dict] = None,
     alt_data: Optional[dict] = None,
 ) -> ExternalValidation:
     """Cross-check engine outputs against external data sources.
@@ -112,10 +113,23 @@ def validate_external(
         if fed_bearish == is_engine_bearish:
             signals_agree += 1
         elif result.fed_signal == "DOVISH" and is_engine_bearish:
-            result.divergence_alerts.append(
-                "Fed cutting rates (dovish) — "
-                "monetary policy turning supportive, may conflict with bearish call"
-            )
+            # Check if market is already in stress — dovish Fed in a falling
+            # market is crisis response (2008, 2020), not a conflict.
+            market_in_stress = False
+            if data is not None and "SP500" in data:
+                sp = data["SP500"].dropna() if hasattr(data["SP500"], 'dropna') else pd.Series(data["SP500"])
+                if len(sp) >= 252:
+                    high_52w = sp.rolling(252).max().iloc[-1]
+                    current = sp.iloc[-1]
+                    market_in_stress = (current / high_52w - 1) < -0.10
+            if market_in_stress:
+                # Fed cutting into a falling market = crisis response = aligned
+                signals_agree += 1
+            else:
+                result.divergence_alerts.append(
+                    "Fed cutting rates (preemptive dovish) while market is near highs — "
+                    "monetary easing conflicts with bearish call"
+                )
 
     # ── 4. Consumer Sentiment (proxy for retail sentiment) ─────────
     if fred_data and "consumer_sentiment" in fred_data:

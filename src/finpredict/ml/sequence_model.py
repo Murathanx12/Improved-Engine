@@ -340,15 +340,6 @@ if _HAS_TORCH:
             if n_available < min_sequences:
                 return {"success": False, "reason": f"Only {n_available} sequences < {min_sequences}"}
 
-            # Normalize features using training data statistics
-            self._train_mean = X.mean().values.astype(np.float32)
-            self._train_std = X.std().values.astype(np.float32)
-            self._train_std = np.clip(self._train_std, 1e-8, None)
-            X_norm = (X.values - self._train_mean) / self._train_std
-
-            # Replace any remaining NaN/inf with 0
-            X_norm = np.nan_to_num(X_norm, nan=0.0, posinf=0.0, neginf=0.0)
-
             # Build target dict with aligned arrays
             target_arrays = {}
             for h in avail_horizons:
@@ -358,16 +349,32 @@ if _HAS_TORCH:
                 target_arrays[h] = t
 
             # Temporal weighting (recent data weighted higher)
-            temporal_weights = np.linspace(0.5, 1.5, len(X_norm)).astype(np.float32)
+            X_raw = X.values
+            temporal_weights = np.linspace(0.5, 1.5, len(X_raw)).astype(np.float32)
 
             # Purged train/val split
             gap_days = 265  # Worst-case: 12m horizon
+            n_available = len(X_raw) - self.WINDOW_SIZE
             val_size = max(252, n_available // 5)
-            split_point = len(X_norm) - val_size - gap_days - self.WINDOW_SIZE
+            split_point = len(X_raw) - val_size - gap_days - self.WINDOW_SIZE
 
             if split_point < self.WINDOW_SIZE + min_sequences // 2:
-                split_point = len(X_norm) - val_size - self.WINDOW_SIZE
+                split_point = len(X_raw) - val_size - self.WINDOW_SIZE
                 gap_days = 0
+
+            assert split_point > self.WINDOW_SIZE, (
+                f"split_point ({split_point}) must exceed WINDOW_SIZE ({self.WINDOW_SIZE})"
+            )
+
+            # Normalize features using ONLY training portion statistics (no leakage)
+            X_train_raw = X_raw[:split_point + self.WINDOW_SIZE]
+            self._train_mean = X_train_raw.mean(axis=0).astype(np.float32)
+            self._train_std = X_train_raw.std(axis=0).astype(np.float32)
+            self._train_std = np.clip(self._train_std, 1e-8, None)
+            X_norm = (X_raw - self._train_mean) / self._train_std
+
+            # Replace any remaining NaN/inf with 0
+            X_norm = np.nan_to_num(X_norm, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Build datasets
             train_X = X_norm[:split_point + self.WINDOW_SIZE]
