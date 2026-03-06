@@ -33,7 +33,7 @@
 
 FinPredict is an ML-first financial prediction engine that combines multiple machine learning models (LightGBM, XGBoost, LSTM, TCN) with traditional quantitative finance methods (GARCH volatility, HMM regimes, Monte Carlo simulation) to produce:
 
-- **Crash probability estimates** at 3-month, 6-month, and 12-month horizons
+- **Crash probability estimates** at 3-month, 6-month, 1 year, and 5 year horizons
 - **Expected return predictions** with uncertainty quantification (quantile regression)
 - **5-year S&P 500 projections** via ML-conditioned Monte Carlo
 - **Sector and individual stock analysis** using factor-based differentiation
