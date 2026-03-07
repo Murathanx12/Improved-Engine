@@ -185,6 +185,12 @@ if _HAS_LIGHTGBM:
                 val_X = train_X.iloc[eval_split:]
                 val_y = train_y.iloc[eval_split:]
 
+            # Guard: val_y must not contain labels unseen during training
+            if not set(val_y.unique()).issubset(set(train_y.unique())):
+                eval_split = int(len(train_X) * 0.9)
+                val_X = train_X.iloc[eval_split:]
+                val_y = train_y.iloc[eval_split:]
+
             model = lgb.LGBMClassifier(
                 objective="multiclass",
                 num_class=5,

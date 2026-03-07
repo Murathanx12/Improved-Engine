@@ -263,13 +263,12 @@ class TestSequenceModelNoHardcoded012:
     """B2: predict_individual must return None for missing models, not 0.12."""
 
     def test_predict_individual_returns_none_for_missing(self):
-        """When LSTM or TCN is None, predict_individual should return None."""
+        """When model is untrained, predict_individual should raise RuntimeError."""
         from finpredict.ml.sequence_model import TemporalEnsemble
         model = TemporalEnsemble()
-        # Untrained model should return None for both
-        result = model.predict_individual(pd.DataFrame(np.random.randn(65, 10)), "12m")
-        assert result["lstm"] is None, "Missing LSTM should return None"
-        assert result["tcn"] is None, "Missing TCN should return None"
+        # Untrained model should raise RuntimeError
+        with pytest.raises(RuntimeError):
+            model.predict_individual(pd.DataFrame(np.random.randn(65, 10)), "12m")
 
     def test_predict_proba_fallback_uses_config(self):
         """predict_proba fallback should use config base rate, not hardcoded 0.12."""
