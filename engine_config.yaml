@@ -83,7 +83,7 @@ data:
 ml:
   crash_base_rate_fallback: 0.12    # Fallback if empirical crash rate unavailable
   lookup_table_blend:
-    divergence_threshold: 0.15      # Blend when |ML - lookup| > this (set 1.0 to disable)
+    divergence_threshold: 1.0       # Disabled — pure ML predictions (set 0.15 to enable blend)
     blend_ratio: 0.5                # Weight on lookup table when blending (0 = pure ML)
   meta_stacker:
     min_models_required: 2          # Minimum models to use stacker (else fallback)
@@ -205,8 +205,8 @@ risk:
   regimes:
     high_vol_threshold: 0.30          # Annual vol above this = "Volatile"
     bull_return_threshold: 0.08       # Annual return above this = "Bull"
-    neutral_return_threshold: 0.00    # Annual return above this (but below bull) = "Neutral"
-    bear_return_threshold: -0.10      # Annual return above this (but below neutral) = "Bear"
+    neutral_return_threshold: -0.02   # Annual return above this (but below bull) = "Neutral"
+    bear_return_threshold: -0.05      # Annual return above this (but below neutral) = "Bear"
     vix_stress_threshold: 25          # VIX above this = stress signal
     risk_stress_threshold: 1.5        # Risk score above this = stress signal
     vix_calm_threshold: 16            # VIX below this in Bear = recovery
@@ -327,6 +327,26 @@ reporting:
 
 
 # ── CACHE SETTINGS ───────────────────────────────────────────────────────────────────
+global_markets:
+  tickers:
+    FTSE: "^FTSE"
+    Nikkei: "^N225"
+    DAX: "^GDAXI"
+    HangSeng: "^HSI"
+    EuroStoxx50: "^STOXX50E"
+    EEM: "EEM"
+  drawdown_threshold: 0.10              # 10% off peak = "in drawdown"
+
+
+data_quality:
+  staleness_threshold_days: 3
+  nan_threshold_pct: 0.20
+  sp500_max_daily_return: 0.10
+  sp500_max_daily_jump: 0.30
+  vix_range: [5, 90]
+  yield_range: [-1.0, 20.0]
+
+
 cache:
   directory: "data_cache"
   ttl_hours: 1                        # Re-fetch data after this many hours

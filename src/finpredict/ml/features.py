@@ -64,7 +64,7 @@ def _frac_diff_ffd(series: pd.Series, d: float = 0.4, threshold: float = 1e-4) -
 # MAIN FEATURE BUILDER
 # ═══════════════════════════════════════════════════════════════════════
 
-def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataFrame:
+def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None, global_data: dict = None) -> pd.DataFrame:
     """Build 80+ backward-looking features from market data and optional FRED macro.
 
     Args:
@@ -279,7 +279,7 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
         df["sp_nasdaq_corr_63d"] = sp_ret.rolling(63).corr(nasdaq_ret)
 
     if "Russell" in data.columns:
-        russell_ret = data["Russell"].pct_change()
+        data["Russell"].pct_change()
         df["small_large_ratio"] = data["Russell"] / sp
         df["small_large_change_3m"] = df["small_large_ratio"].pct_change(63)
 
@@ -379,6 +379,18 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
         interaction_cols["gpr_x_mom"] = df["fred_gpr_world"] * df["mom_1m"]
     if interaction_cols:
         df = pd.concat([df, pd.DataFrame(interaction_cols, index=df.index)], axis=1)
+
+    # ═══════════════════════════════════════════════════════════════
+    # 9b. GLOBAL CONTAGION FEATURES (if provided)
+    # ═══════════════════════════════════════════════════════════════
+    if global_data:
+        try:
+            from finpredict.data.global_crashes import compute_contagion_features
+            contagion = compute_contagion_features(global_data, df.index)
+            if not contagion.empty:
+                df = pd.concat([df, contagion], axis=1)
+        except Exception:
+            pass
 
     # ═══════════════════════════════════════════════════════════════
     # 10. NEAR-TERM STRESS SIGNALS (0-90 day precision)
@@ -595,7 +607,7 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None) -> pd.DataF
     # ═══════════════════════════════════════════════════════════════
     # Drop the raw price column (SP500 itself is not a feature)
     # Keep only derived features
-    df = df.replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
+    df = df.replace([np.inf, -np.inf], np.nan).ffill()
     return df
 
 

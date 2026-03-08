@@ -33,13 +33,11 @@ HOW IT WORKS:
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from typing import Optional
 
 from finpredict.config import config, get_institutional_return
 from finpredict.simulation.monte_carlo import simulate_paths
 from finpredict.ml.features import (
-    build_feature_matrix, build_target_crash, build_target_return,
-    build_target_crash_multi, build_target_return_multi,
+    build_feature_matrix, build_target_crash_multi, build_target_return_multi,
     build_target_crash_ensemble,
 )
 from finpredict.ml.crash_model import CrashPredictor
@@ -48,12 +46,14 @@ from finpredict.ml.xgboost_model import XGBoostCrashPredictor
 from finpredict.ml.sequence_model import TemporalEnsemble
 from finpredict.ml.meta_stacker import MetaStacker
 from finpredict.ml.crash_timing import CrashTimingClassifier
+from finpredict.ml.survival_model import CrashSurvivalModel
 
 
 def run_backtest(
     data: pd.DataFrame,
     crash_freq: float,
     fred_data: dict = None,
+    global_data: dict = None,
 ) -> pd.DataFrame:
     """
     ML-First Walk-Forward Backtest.
@@ -88,7 +88,7 @@ def run_backtest(
 
     # ── Pre-compute features and targets ──────────────────────────
     print("  [ML] Building feature matrix with FRED time series...")
-    features = build_feature_matrix(data, fred_data=fred_data)
+    features = build_feature_matrix(data, fred_data=fred_data, global_data=global_data)
     n_features = len(features.columns)
     print(f"  [ML] {n_features} features built")
 
@@ -106,13 +106,14 @@ def run_backtest(
     temporal_model = TemporalEnsemble(hidden_dim=128)
     meta_stacker = MetaStacker()
     crash_timing = CrashTimingClassifier()
+    cox_model = CrashSurvivalModel()
 
     last_train_idx = -9999
     retrain_interval = 63         # Retrain every ~3 months (was 126 in v6)
     min_train_samples = 1260      # Need 5+ years of data
 
     # Collectors for meta-stacker OOS predictions
-    oos_predictions = {"lgb": {}, "xgb": {}, "lstm": {}, "tcn": {}}
+    oos_predictions = {"lgb": {}, "xgb": {}, "lstm": {}, "tcn": {}, "cox": {}}
     oos_regime_probs = []
     oos_targets = {}
     oos_indices = []
@@ -155,10 +156,18 @@ def run_backtest(
             )
 
             # Train crash timing classifier
-            timing_result = crash_timing.train(
+            crash_timing.train(
                 features, data,
                 train_end_idx=idx,
                 min_train_samples=min_train_samples,
+            )
+
+            # Train Cox survival model
+            cox_model.train(
+                features, crash_targets,
+                train_end_idx=idx,
+                min_train_samples=min_train_samples,
+                data=data,
             )
 
             # Train meta-stacker on accumulated OOS predictions
@@ -255,6 +264,14 @@ def run_backtest(
                     except Exception:
                         pass
 
+            # Cox survival model predictions
+            cox_crash_12m = None
+            if cox_model.is_trained:
+                try:
+                    cox_crash_12m = float(cox_model.predict_proba(current_features, "12m")[0])
+                except Exception:
+                    pass
+
             # Collect OOS predictions for meta-stacker training
             oos_indices.append(idx)
             for h in ["3m", "6m", "12m"]:
@@ -263,12 +280,14 @@ def run_backtest(
                     oos_predictions["xgb"][h] = []
                     oos_predictions["lstm"][h] = []
                     oos_predictions["tcn"][h] = []
+                    oos_predictions["cox"][h] = []
                     oos_targets[h] = []
 
             oos_predictions["lgb"]["12m"].append(lgb_crash_12m)
             oos_predictions["xgb"]["12m"].append(xgb_crash_12m)
             oos_predictions["lstm"]["12m"].append(lstm_crash_12m)
             oos_predictions["tcn"]["12m"].append(tcn_crash_12m)
+            oos_predictions["cox"]["12m"].append(cox_crash_12m)
 
             # Collect 6m and 3m OOS predictions for multi-horizon meta-stacker
             if lgb_crash_6m is not None:
@@ -279,6 +298,13 @@ def run_backtest(
                 oos_predictions["xgb"]["6m"].append(xgb_6m)
                 oos_predictions["lstm"]["6m"].append(lstm_crash_6m)
                 oos_predictions["tcn"]["6m"].append(tcn_crash_6m)
+                cox_6m = None
+                if cox_model.is_trained:
+                    try:
+                        cox_6m = float(cox_model.predict_proba(current_features, "6m")[0])
+                    except Exception:
+                        pass
+                oos_predictions["cox"]["6m"].append(cox_6m)
             if lgb_crash_3m is not None:
                 oos_predictions["lgb"]["3m"].append(lgb_crash_3m)
                 xgb_3m = None
@@ -287,6 +313,13 @@ def run_backtest(
                 oos_predictions["xgb"]["3m"].append(xgb_3m)
                 oos_predictions["lstm"]["3m"].append(lstm_crash_3m)
                 oos_predictions["tcn"]["3m"].append(tcn_crash_3m)
+                cox_3m = None
+                if cox_model.is_trained:
+                    try:
+                        cox_3m = float(cox_model.predict_proba(current_features, "3m")[0])
+                    except Exception:
+                        pass
+                oos_predictions["cox"]["3m"].append(cox_3m)
 
             # Meta-stacker ensemble prediction
             if meta_stacker.is_trained:
@@ -295,6 +328,7 @@ def run_backtest(
                     "xgb": xgb_crash_12m,
                     "lstm": lstm_crash_12m,
                     "tcn": tcn_crash_12m,
+                    "cox": cox_crash_12m,
                 }
                 ml_crash_12m = float(meta_stacker.predict_proba(model_preds, horizon="12m")[0])
             else:
@@ -304,6 +338,8 @@ def run_backtest(
                     preds_to_avg.append(xgb_crash_12m)
                 if lstm_crash_12m is not None:
                     preds_to_avg.append(lstm_crash_12m)
+                if cox_crash_12m is not None:
+                    preds_to_avg.append(cox_crash_12m)
                 ml_crash_12m = float(np.mean(preds_to_avg))
 
             ml_crash_6m = lgb_crash_6m
@@ -403,6 +439,7 @@ def run_backtest(
             "xgb_crash_12m": xgb_crash_12m,
             "lstm_crash_12m": lstm_crash_12m,
             "tcn_crash_12m": tcn_crash_12m,
+            "cox_crash_12m": cox_crash_12m,
             # ML return predictions (PRIMARY)
             "ml_return_12m": ml_return_12m,
             "ml_return_6m": ml_return_6m,
@@ -434,6 +471,7 @@ def run_backtest(
         bt.attrs["temporal_model"] = temporal_model
         bt.attrs["meta_stacker"] = meta_stacker
         bt.attrs["crash_timing"] = crash_timing
+        bt.attrs["cox_model"] = cox_model
 
         # ── Evaluation module integration ─────────────────────────────
         try:
@@ -469,7 +507,7 @@ def run_backtest(
 
             bt.attrs["evaluation"] = eval_results
 
-            print(f"\n  [EVAL] ═══ MODEL EVALUATION ═══")
+            print("\n  [EVAL] ═══ MODEL EVALUATION ═══")
             print(f"  [EVAL] Brier Score:          {bs:.4f}")
             print(f"  [EVAL] BSS vs Climatology:   {bss_clim:.4f}")
             print(f"  [EVAL] Calibration Error:    {rel['calibration_error']:.4f}")
@@ -478,9 +516,9 @@ def run_backtest(
             if bss_clim < 0.02:
                 print(f"  [EVAL] [WARN] Model barely beats naive baseline (BSS={bss_clim:.4f})")
             elif bss_clim > 0:
-                print(f"  [EVAL] [OK] Model beats climatology baseline")
+                print("  [EVAL] [OK] Model beats climatology baseline")
             else:
-                print(f"  [EVAL] [WARN] Model does NOT beat climatology baseline")
+                print("  [EVAL] [WARN] Model does NOT beat climatology baseline")
 
         except Exception as e:
             print(f"  [EVAL] Evaluation failed: {e}")
@@ -505,7 +543,7 @@ def _print_results(bt, crash_model, return_model, ml_train_log):
     coverage = bt["within_bounds"].mean() * 100
     direction = bt["direction_correct"].mean() * 100
 
-    print(f"\n  [RESULTS] ML Walk-Forward Backtest:")
+    print("\n  [RESULTS] ML Walk-Forward Backtest:")
     print(f"  Predictions:          {len(bt)}")
     print(f"  MC MAPE:              {mape:.1f}%")
     print(f"  90% Band Coverage:    {coverage:.1f}%")
@@ -527,7 +565,7 @@ def _print_results(bt, crash_model, return_model, ml_train_log):
     except Exception:
         crash_auc = 0.5
 
-    print(f"\n  ═══ ML CRASH MODEL (12-month) ═══")
+    print("\n  ═══ ML CRASH MODEL (12-month) ═══")
     print(f"  Brier Score:          {ml_brier:.4f} (0.25 = random, lower = better)")
     print(f"  AUC:                  {crash_auc:.3f} (0.5 = random, higher = better)")
     print(f"  Prediction Range:     [{crash_range[0]*100:.1f}%, {crash_range[1]*100:.1f}%]")
@@ -537,13 +575,13 @@ def _print_results(bt, crash_model, return_model, ml_train_log):
     # DISCRIMINATION CHECK — this is the key metric
     if crash_std < 0.05:
         print(f"  ⚠ WARNING: Low discrimination (std={crash_std*100:.1f}% < 5%)")
-        print(f"    Model predictions are clustered — limited predictive value")
+        print("    Model predictions are clustered — limited predictive value")
     else:
         print(f"  ✓ Good discrimination (std={crash_std*100:.1f}% > 5%)")
 
     # Fine-grained calibration
     bins = [(0, 0.10), (0.10, 0.20), (0.20, 0.30), (0.30, 0.50), (0.50, 1.0)]
-    print(f"  Crash Calibration:")
+    print("  Crash Calibration:")
     for lo, hi in bins:
         mask = (bt["ml_crash_12m"] >= lo) & (bt["ml_crash_12m"] < hi)
         subset = bt[mask]
@@ -591,7 +629,7 @@ def _print_results(bt, crash_model, return_model, ml_train_log):
     else:
         q_coverage = 0
 
-    print(f"\n  ═══ ML RETURN MODEL (12-month) ═══")
+    print("\n  ═══ ML RETURN MODEL (12-month) ═══")
     print(f"  Return MAE:           {ml_return_mae*100:.1f}%")
     print(f"  Return Correlation:   {ml_return_corr:.3f}")
     print(f"  Prediction Range:     [{ret_range[0]*100:.1f}%, {ret_range[1]*100:.1f}%]")
@@ -605,7 +643,7 @@ def _print_results(bt, crash_model, return_model, ml_train_log):
     # ═══════════════════════════════════════════════════════════════
     if ml_train_log:
         last = ml_train_log[-1]
-        print(f"\n  [ML TRAINING]")
+        print("\n  [ML TRAINING]")
         print(f"  Models retrained:     {len(ml_train_log)} times")
         print(f"  Last Crash AUC:       {last.get('crash_val_auc', 0):.3f}")
         print(f"  Last Return Corr:     {last.get('return_val_corr', 0):.3f}")
@@ -617,7 +655,7 @@ def _print_results(bt, crash_model, return_model, ml_train_log):
     if crash_model.is_trained:
         top = crash_model.get_top_features(10)
         if top:
-            print(f"\n  [TOP CRASH PREDICTORS]")
+            print("\n  [TOP CRASH PREDICTORS]")
             for feat, imp in top:
                 print(f"    {feat}: {imp:.1f}")
 
@@ -700,7 +738,7 @@ def _compute_metrics(bt, crash_model, return_model, ml_train_log):
         metrics["advanced_metrics"] = advanced
 
         # Print advanced metrics
-        print(f"\n  ═══ ADVANCED VALIDATION METRICS ═══")
+        print("\n  ═══ ADVANCED VALIDATION METRICS ═══")
         if "lead_time" in advanced:
             lt = advanced["lead_time"]
             status = "OK" if lt["mean_lead_days"] > 30 else "WARN"
@@ -799,9 +837,9 @@ def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
     }
 
     # ── Table 1: BSS per model (12m horizon) ────────────────────────
-    print(f"\n  ═══════════════════════════════════════════════════════════")
-    print(f"  TABLE 1: Crash Prediction — Brier Skill Score (12-month)")
-    print(f"  ═══════════════════════════════════════════════════════════")
+    print("\n  ═══════════════════════════════════════════════════════════")
+    print("  TABLE 1: Crash Prediction — Brier Skill Score (12-month)")
+    print("  ═══════════════════════════════════════════════════════════")
 
     bss_rows = []
     y_true_12m = bt["actual_crash_12m"].astype(float).values
@@ -886,9 +924,9 @@ def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
                   f"{row['ECE']:>8} {row['Pred_Std']:>8}")
 
     # ── Table 1b: Multi-horizon BSS (Ensemble only) ─────────────────
-    print(f"\n  ═══════════════════════════════════════════════════════════")
-    print(f"  TABLE 1b: Meta-Ensemble BSS by Horizon")
-    print(f"  ═══════════════════════════════════════════════════════════")
+    print("\n  ═══════════════════════════════════════════════════════════")
+    print("  TABLE 1b: Meta-Ensemble BSS by Horizon")
+    print("  ═══════════════════════════════════════════════════════════")
 
     horizon_rows = []
     for horizon, (pred_col, actual_col) in horizon_cols.items():
@@ -927,9 +965,9 @@ def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
                   f"{row['Brier']:>8} {row['BSS_Clim']:>10} {row['AUC']:>6}")
 
     # ── Table 2: Operational Metrics ────────────────────────────────
-    print(f"\n  ═══════════════════════════════════════════════════════════")
-    print(f"  TABLE 2: Operational Metrics (Lead Time, False Alarms)")
-    print(f"  ═══════════════════════════════════════════════════════════")
+    print("\n  ═══════════════════════════════════════════════════════════")
+    print("  TABLE 2: Operational Metrics (Lead Time, False Alarms)")
+    print("  ═══════════════════════════════════════════════════════════")
 
     crash_periods = _extract_crash_periods(bt)
     op_rows = []
@@ -977,9 +1015,9 @@ def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
 
     # ── Table 3: Per-crash lead time detail ─────────────────────────
     if not crash_periods.empty:
-        print(f"\n  ═══════════════════════════════════════════════════════════")
-        print(f"  TABLE 3: Per-Crash Detection Detail (Meta-Ensemble)")
-        print(f"  ═══════════════════════════════════════════════════════════")
+        print("\n  ═══════════════════════════════════════════════════════════")
+        print("  TABLE 3: Per-Crash Detection Detail (Meta-Ensemble)")
+        print("  ═══════════════════════════════════════════════════════════")
 
         lt_detail = lead_time_accuracy(bt, crash_periods, prob_col="ml_crash_12m", prob_threshold=0.40)
         if lt_detail["per_crash"]:
@@ -992,9 +1030,9 @@ def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
                 print(f"  {pc['crash_start']:<14} {det_str:>10} {lead_str:>10} {prob_str:>11}")
 
     # ── Summary verdict ─────────────────────────────────────────────
-    print(f"\n  ═══════════════════════════════════════════════════════════")
-    print(f"  PUBLICATION READINESS ASSESSMENT")
-    print(f"  ═══════════════════════════════════════════════════════════")
+    print("\n  ═══════════════════════════════════════════════════════════")
+    print("  PUBLICATION READINESS ASSESSMENT")
+    print("  ═══════════════════════════════════════════════════════════")
 
     if bss_rows:
         ensemble_row = next((r for r in bss_rows if r["Model"] == "Meta-Ensemble"), None)
@@ -1027,11 +1065,11 @@ def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
 
             print(f"\n  Result: {passed}/{total} checks passed")
             if passed == total:
-                print(f"  Verdict: READY for submission — model demonstrates genuine skill")
+                print("  Verdict: READY for submission — model demonstrates genuine skill")
             elif passed >= total - 1:
-                print(f"  Verdict: NEAR-READY — minor improvements needed")
+                print("  Verdict: NEAR-READY — minor improvements needed")
             else:
-                print(f"  Verdict: NOT READY — significant improvements needed")
+                print("  Verdict: NOT READY — significant improvements needed")
 
     return {
         "bss_table": bss_df if not bss_df.empty else pd.DataFrame(),

@@ -451,7 +451,7 @@ class TestMetaStacker:
         from finpredict.ml.meta_stacker import MetaStacker
         stacker = MetaStacker()
         assert not stacker.is_trained
-        assert stacker.MODEL_NAMES == ["lgb", "xgb", "lstm", "tcn"]
+        assert stacker.MODEL_NAMES == ["lgb", "xgb", "lstm", "tcn", "cox"]
 
     def test_train_and_predict(self):
         from finpredict.ml.meta_stacker import MetaStacker

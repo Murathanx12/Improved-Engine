@@ -30,7 +30,6 @@ TRAINING:
 
 import logging
 import numpy as np
-import pandas as pd
 from typing import Optional
 
 from sklearn.linear_model import LogisticRegression
@@ -49,7 +48,7 @@ class MetaStacker:
     predictions conditioned on the current market regime.
     """
 
-    MODEL_NAMES = ["lgb", "xgb", "lstm", "tcn"]
+    MODEL_NAMES = ["lgb", "xgb", "lstm", "tcn", "cox"]
 
     def __init__(self, random_state: int = 42):
         self.random_state = random_state
@@ -232,7 +231,7 @@ class MetaStacker:
             Calibrated ensemble crash probability.
         """
         ms_cfg = _cfg.get("ml", {}).get("meta_stacker", {})
-        min_models = ms_cfg.get("min_models_required", 2)
+        ms_cfg.get("min_models_required", 2)
         fallback_single = ms_cfg.get("fallback_to_best_single", True)
 
         # Determine which models from training are actually available now
