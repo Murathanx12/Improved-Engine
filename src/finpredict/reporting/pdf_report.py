@@ -881,15 +881,22 @@ def generate_report(
     if sector_results:
         sect_rows = []
         for name, info in sorted(
-            sector_results.items(), key=lambda x: x[1]["expected_return"], reverse=True
+            sector_results.items(), key=lambda x: x[1].get("expected_total", x[1].get("expected_return", 0)), reverse=True
         ):
+            exp_ret = info.get("expected_total", info.get("expected_return", 0))
+            med_ret = info.get("sim_total_return", info.get("median_return", 0))
+            vol = info.get("sigma", info.get("volatility", 0))
+            if isinstance(vol, float) and vol < 1:
+                vol *= 100  # Convert decimal to percent
+            ann_ret = info.get("expected_annual", exp_ret / 5 if exp_ret else 0)
+            sharpe = ann_ret / vol if vol > 0 else 0
             sect_rows.append(
                 [
                     name,
-                    f"{info['expected_return']:+.1f}%",
-                    f"{info['median_return']:+.1f}%",
-                    f"{info['volatility']:.0f}%",
-                    f"{info['sharpe']:.2f}",
+                    f"{exp_ret:+.1f}%",
+                    f"{med_ret:+.1f}%",
+                    f"{vol:.0f}%",
+                    f"{sharpe:.2f}",
                 ]
             )
         story.append(

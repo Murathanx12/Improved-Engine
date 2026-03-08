@@ -125,7 +125,7 @@ validation:
 # ── SIMULATION SETTINGS ─────────────────────────────────────────────────────────────
 simulation:
   forecast_years: 5                   # Projection horizon
-  num_simulations: 10000              # Monte Carlo paths
+  num_simulations: 500                # Monte Carlo paths (TEMP: reduced for fast testing, restore to 10000)
   trading_days_per_year: 252          # Standard trading days
 
   # Jump-diffusion parameters
@@ -174,10 +174,10 @@ simulation:
 
 # ── BACKTESTING SETTINGS ────────────────────────────────────────────────────────────
 backtest:
-  step_months: 3                      # Predict every N months
+  step_months: 12                     # Predict every N months (TEMP: was 3, restore for accuracy)
   lookback_years: 10                  # History used per prediction point
   forward_days: 252                   # Predict 1 year ahead
-  simulations_per_point: 1000         # Sims per backtest point (speed vs accuracy)
+  simulations_per_point: 200          # Sims per backtest point (TEMP: was 1000, restore for accuracy)
   transaction_cost: 0.001             # 0.1% per trade
 
 

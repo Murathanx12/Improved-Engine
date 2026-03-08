@@ -367,10 +367,16 @@ if _HAS_LIGHTGBM:
                 # Zero variance: LightGBM produced constant predictions.
                 # Platt scaling on degenerate input produces garbage — skip.
                 print(f"  [WARN] Zero variance in raw probs for {horizon}, skipping calibration")
+            elif val_y.nunique() < 2:
+                # Single class in validation set — Platt scaling needs both classes.
+                print(f"  [WARN] Single class in val set for {horizon}, skipping calibration")
             else:
-                calibrator = _PlattScaler(C=1.0, solver="lbfgs", max_iter=1000)
-                calibrator.fit(raw_probs.reshape(-1, 1), val_y.values)
-                self.calibrators[horizon] = calibrator
+                try:
+                    calibrator = _PlattScaler(C=1.0, solver="lbfgs", max_iter=1000)
+                    calibrator.fit(raw_probs.reshape(-1, 1), val_y.values)
+                    self.calibrators[horizon] = calibrator
+                except ValueError as e:
+                    print(f"  [WARN] Platt calibration failed for {horizon}: {e}")
 
                 # ── Verify calibration preserved monotonicity ─────────────
                 test_scores = np.linspace(
@@ -384,7 +390,7 @@ if _HAS_LIGHTGBM:
 
             # ── Compute metrics ───────────────────────────────────────
             if horizon in self.calibrators:
-                cal_probs = calibrator.predict_proba(raw_probs.reshape(-1, 1))[:, 1]
+                cal_probs = self.calibrators[horizon].predict_proba(raw_probs.reshape(-1, 1))[:, 1]
             else:
                 cal_probs = raw_probs
             val_brier = brier_score_loss(val_y, cal_probs)

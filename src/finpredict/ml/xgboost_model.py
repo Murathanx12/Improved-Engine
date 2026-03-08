@@ -173,10 +173,15 @@ if _HAS_XGBOOST:
 
             if raw_probs.std() < 1e-6:
                 print(f"  [WARN] XGB zero variance in raw probs for {horizon}, skipping calibration")
+            elif val_y.nunique() < 2:
+                print(f"  [WARN] XGB single class in val set for {horizon}, skipping calibration")
             else:
-                calibrator = _PlattScaler(C=1.0, solver='lbfgs', max_iter=1000)
-                calibrator.fit(raw_probs.reshape(-1, 1), val_y.values)
-                self.calibrators[horizon] = calibrator
+                try:
+                    calibrator = _PlattScaler(C=1.0, solver='lbfgs', max_iter=1000)
+                    calibrator.fit(raw_probs.reshape(-1, 1), val_y.values)
+                    self.calibrators[horizon] = calibrator
+                except ValueError as e:
+                    print(f"  [WARN] XGB Platt calibration failed for {horizon}: {e}")
 
                 # Verify calibration preserved monotonicity
                 test_scores = np.linspace(

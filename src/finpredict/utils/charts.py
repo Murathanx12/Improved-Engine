@@ -453,7 +453,7 @@ def chart_sectors(sector_results, sp500_return):
     ax.set_facecolor(CHART_COLORS["bg"])
 
     names = list(sector_results.keys())
-    returns = [sector_results[n]["expected_return"] for n in names]
+    returns = [sector_results[n].get("expected_total", sector_results[n].get("expected_return", 0)) for n in names]
 
     # Sort by return
     sorted_pairs = sorted(zip(names, returns), key=lambda x: x[1])
