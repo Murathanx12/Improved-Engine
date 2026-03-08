@@ -33,7 +33,9 @@ import pandas as pd
 from finpredict.config import config, PROJECT_ROOT, get_forecast_days
 from finpredict.data import cached_fetch_all_data
 from finpredict.data.fred_fetcher import (
-    fetch_fred_data, get_recession_probability, get_macro_features,
+    fetch_fred_data,
+    get_recession_probability,
+    get_macro_features,
 )
 from finpredict.risk import build_risk_score, detect_regimes, identify_crashes
 from finpredict.models.garch import fit_garch
@@ -90,6 +92,7 @@ def main():
         # ── Data quality validation ───────────────────────────────
         try:
             from finpredict.data.quality import DataQualityChecker
+
             dq_warnings = DataQualityChecker().validate(data)
             if dq_warnings:
                 print(f"  [DQ] {len(dq_warnings)} data quality warning(s):")
@@ -109,6 +112,7 @@ def main():
         global_data = {}
         try:
             from finpredict.data.global_crashes import cached_fetch_global_indices
+
             global_data = cached_fetch_global_indices()
         except Exception as e:
             print(f"  [GLOBAL] Global indices unavailable: {e}")
@@ -140,11 +144,7 @@ def main():
         garch_rho_leverage = None
         if garch_result.success:
             # Persistence = alpha + gamma/2 + beta (for GJR-GARCH)
-            garch_persistence = (
-                garch_result.alpha
-                + garch_result.gamma / 2
-                + garch_result.beta
-            )
+            garch_persistence = garch_result.alpha + garch_result.gamma / 2 + garch_result.beta
             print(f"  [GARCH] Conditional vol: {garch_vol*100:.1f}%")
             print(f"  [GARCH] Persistence: {garch_persistence:.4f}")
 
@@ -155,22 +155,26 @@ def main():
 
             # rho_leverage: derived from GJR-GARCH asymmetry parameter
             rho_raw = -np.sqrt(gamma / (2 * alpha + gamma + 1e-8))
-            garch_rho_leverage = float(np.clip(
-                rho_raw,
-                garch_cfg.get("rho_leverage_min", -0.95),
-                garch_cfg.get("rho_leverage_max", -0.30),
-            ))
+            garch_rho_leverage = float(
+                np.clip(
+                    rho_raw,
+                    garch_cfg.get("rho_leverage_min", -0.95),
+                    garch_cfg.get("rho_leverage_max", -0.30),
+                )
+            )
 
             # xi: coefficient of variation of GARCH conditional volatility
             # conditional_volatility from arch is in % units (returns scaled ×100)
             if garch_result.model_fit is not None:
                 cond_vol = garch_result.model_fit.conditional_volatility / 100
                 xi_raw = float(cond_vol.std() / cond_vol.mean()) if cond_vol.mean() > 0 else 0.06
-                garch_xi = float(np.clip(
-                    xi_raw,
-                    garch_cfg.get("xi_min", 0.02),
-                    garch_cfg.get("xi_max", 0.15),
-                ))
+                garch_xi = float(
+                    np.clip(
+                        xi_raw,
+                        garch_cfg.get("xi_min", 0.02),
+                        garch_cfg.get("xi_max", 0.15),
+                    )
+                )
 
             print(f"  [GARCH] Derived rho_leverage: {garch_rho_leverage:.3f}")
             if garch_xi is not None:
@@ -193,8 +197,7 @@ def main():
         if hmm_result.success:
             current_regime = hmm_result.current_regime
             data["Regime"] = hmm_result.regime_labels
-            print(f"  [REGIME] Using HMM: {current_regime} "
-                  f"(rule-based: {rule_regime})")
+            print(f"  [REGIME] Using HMM: {current_regime} " f"(rule-based: {rule_regime})")
         else:
             current_regime = rule_regime
             print(f"  [REGIME] Using rule-based: {current_regime}")
@@ -204,15 +207,13 @@ def main():
 
         # Consistency check: if HMM says Bear/Crisis but risk score is low,
         # the HMM state labels may have swapped due to random seed. Downgrade.
-        if (pd.notna(current_risk)
-                and current_regime in ("Bear", "Crisis")
-                and current_risk < 0.5):
-            print(f"  [WARN] HMM regime '{current_regime}' contradicts "
-                  f"low risk score ({current_risk:.2f}σ), downgrading to Neutral")
+        if pd.notna(current_risk) and current_regime in ("Bear", "Crisis") and current_risk < 0.5:
+            print(
+                f"  [WARN] HMM regime '{current_regime}' contradicts "
+                f"low risk score ({current_risk:.2f}σ), downgrading to Neutral"
+            )
             current_regime = "Neutral"
-        current_vix = (
-            float(data["VIX"].iloc[-1]) if "VIX" in data.columns else 20.0
-        )
+        current_vix = float(data["VIX"].iloc[-1]) if "VIX" in data.columns else 20.0
         yield_curve = (
             float(data["T10Y"].iloc[-1] - data["T3M"].iloc[-1])
             if "T10Y" in data.columns and "T3M" in data.columns
@@ -240,6 +241,25 @@ def main():
         bt_results = run_backtest(data, crash_freq, fred_data=fred_data, global_data=global_data)
 
         # ══════════════════════════════════════════════════════════
+        # 8b. ROLLING BRIER MONITOR (degradation detection)
+        # ══════════════════════════════════════════════════════════
+        try:
+            from finpredict.evaluation.brier_monitor import RollingBrierMonitor
+
+            monitor = RollingBrierMonitor()
+            degradation = monitor.evaluate_and_check(data)
+            if degradation["evaluated"] > 0:
+                print(f"  [MONITOR] Evaluated {degradation['evaluated']} past predictions")
+                if degradation["rolling_brier"] is not None:
+                    print(f"  [MONITOR] Rolling Brier: {degradation['rolling_brier']:.4f}")
+                if degradation["degraded"]:
+                    print("  [MONITOR] WARNING: Model degradation detected!")
+            else:
+                print("  [MONITOR] No past predictions to evaluate yet")
+        except Exception as e:
+            print(f"  [MONITOR] Brier monitor unavailable: {e}")
+
+        # ══════════════════════════════════════════════════════════
         # 9. CURRENT ML PREDICTIONS (PRIMARY OUTPUT)
         # ══════════════════════════════════════════════════════════
         ml_crash_prob = None
@@ -262,14 +282,17 @@ def main():
         cox_model = bt_results.attrs.get("cox_model")
         crash_timing_model = bt_results.attrs.get("crash_timing")
 
-        if (crash_model and crash_model.is_trained
-                and return_model and return_model.is_trained):
-            current_features = build_feature_matrix(data, fred_data=fred_data, global_data=global_data)
+        if crash_model and crash_model.is_trained and return_model and return_model.is_trained:
+            current_features = build_feature_matrix(
+                data, fred_data=fred_data, global_data=global_data
+            )
             current_row = current_features.iloc[-1:]
 
             # Multi-horizon crash predictions (with SHAP for 12m)
             shap_result = crash_model.predict_with_shap(
-                current_row, "12m", compute_shap=True,
+                current_row,
+                "12m",
+                compute_shap=True,
             )
             lgb_crash_12m = float(shap_result["crash_prob"][0])
             shap_values = shap_result.get("shap_values")
@@ -319,9 +342,13 @@ def main():
                     "cox": cox_crash_12m,
                 }
                 regime_probs_arr = hmm_result.regime_probs if hmm_result.success else None
-                ml_crash_prob = float(meta_stacker.predict_proba(
-                    model_preds, regime_probs_arr, horizon="12m",
-                )[0])
+                ml_crash_prob = float(
+                    meta_stacker.predict_proba(
+                        model_preds,
+                        regime_probs_arr,
+                        horizon="12m",
+                    )[0]
+                )
             else:
                 # Simple average of available models
                 preds_to_avg = [lgb_crash_12m]
@@ -336,7 +363,8 @@ def main():
             # Crash timing — which 3-month window is highest risk
             if crash_timing_model and crash_timing_model.is_trained:
                 crash_timing_results = crash_timing_model.predict_window(
-                    current_row, crash_prob_12m=ml_crash_prob,
+                    current_row,
+                    crash_prob_12m=ml_crash_prob,
                 )
 
             # Multi-horizon return predictions
@@ -375,19 +403,30 @@ def main():
             if meta_stacker and meta_stacker.is_trained:
                 weights = meta_stacker.get_model_weights("12m")
                 if weights:
-                    print(f"    Meta-stacker weights: {', '.join(f'{k}={v:.2f}' for k, v in list(weights.items())[:4])}")
+                    print(
+                        f"    Meta-stacker weights: {', '.join(f'{k}={v:.2f}' for k, v in list(weights.items())[:4])}"
+                    )
             print()
 
             # Crash timing
             if crash_timing_results:
                 from finpredict.ml.crash_timing import WINDOWS
+
                 print("  Crash Timing (3-month windows):")
                 for w in WINDOWS:
                     prob = crash_timing_results.get(w, 0)
                     bar = "#" * int(prob * 40)
-                    label = w.replace("_", " ").replace("0 3m", "0-3m").replace("3 6m", "3-6m").replace("6 9m", "6-9m").replace("9 12m", "9-12m")
+                    label = (
+                        w.replace("_", " ")
+                        .replace("0 3m", "0-3m")
+                        .replace("3 6m", "3-6m")
+                        .replace("6 9m", "6-9m")
+                        .replace("9 12m", "9-12m")
+                    )
                     print(f"    {label:14s} {prob*100:5.1f}%  {bar}")
-                best_window, best_prob = crash_timing_model.get_most_likely_window(crash_timing_results)
+                best_window, best_prob = crash_timing_model.get_most_likely_window(
+                    crash_timing_results
+                )
                 if best_prob > 0.10:
                     print(f"    >> Highest crash risk: {best_window} ({best_prob*100:.1f}%)")
                 print()
@@ -411,7 +450,9 @@ def main():
             # Use shap_values from predict_with_shap (already computed above)
             if shap_values:
                 shap_contributions = sorted(
-                    shap_values.items(), key=lambda x: abs(x[1]), reverse=True,
+                    shap_values.items(),
+                    key=lambda x: abs(x[1]),
+                    reverse=True,
                 )
                 print("\n  SHAP Crash Drivers (current prediction):")
                 for feat, sv in shap_contributions[:7]:
@@ -426,10 +467,13 @@ def main():
 
             # Counterfactual / what-if sensitivity analysis
             _COUNTERFACTUAL_SCENARIOS = [
-                {"label": "VIX spikes to 40",         "overrides": {"vix": 40.0}},
-                {"label": "Yield curve inverts -1%",   "overrides": {"term_spread": -1.0}},
-                {"label": "VIX 40 + inverted curve",   "overrides": {"vix": 40.0, "term_spread": -1.0}},
-                {"label": "VIX falls to 15 (calm)",    "overrides": {"vix": 15.0}},
+                {"label": "VIX spikes to 40", "overrides": {"vix": 40.0}},
+                {"label": "Yield curve inverts -1%", "overrides": {"term_spread": -1.0}},
+                {
+                    "label": "VIX 40 + inverted curve",
+                    "overrides": {"vix": 40.0, "term_spread": -1.0},
+                },
+                {"label": "VIX falls to 15 (calm)", "overrides": {"vix": 15.0}},
             ]
             counterfactual_results = crash_model.run_counterfactual(
                 current_row, _COUNTERFACTUAL_SCENARIOS
@@ -453,13 +497,15 @@ def main():
                 anomaly_det = AnomalyDetector()
                 anomaly_det.fit(current_features.iloc[:-1])
                 anomaly_report = anomaly_det.anomaly_report(current_row)
-                print(f"  [ANOMALY] Status: {anomaly_report['status']} "
-                      f"(score={anomaly_report['score']:.3f})")
-                if anomaly_report['is_anomalous']:
+                print(
+                    f"  [ANOMALY] Status: {anomaly_report['status']} "
+                    f"(score={anomaly_report['score']:.3f})"
+                )
+                if anomaly_report["is_anomalous"]:
                     print(f"  [ANOMALY] {anomaly_report['interpretation']}")
                     # Reduce confidence in ML predictions when extrapolating
                     if ml_crash_prob is not None:
-                        conf_factor = anomaly_report['confidence_factor']
+                        conf_factor = anomaly_report["confidence_factor"]
                         base_rate = crash_model._train_crash_rate.get(
                             "12m",
                             config.get("ml", {}).get("crash_base_rate_fallback", 0.12),
@@ -469,24 +515,32 @@ def main():
                         if ml_above_base and anomaly_signals_risk:
                             # ML predicts elevated crash risk AND anomaly confirms
                             # stress — preserve the ML signal, don't dampen
-                            print(f"  [ANOMALY] Crash prob kept at {ml_crash_prob*100:.1f}% "
-                                  f"(anomaly confirms stress, conf={conf_factor:.2f})")
+                            print(
+                                f"  [ANOMALY] Crash prob kept at {ml_crash_prob*100:.1f}% "
+                                f"(anomaly confirms stress, conf={conf_factor:.2f})"
+                            )
                         else:
                             adjusted = ml_crash_prob * conf_factor + base_rate * (1 - conf_factor)
-                            print(f"  [ANOMALY] Crash prob adjusted: {ml_crash_prob*100:.1f}% "
-                                  f"-> {adjusted*100:.1f}% (confidence factor: {conf_factor:.2f})")
+                            print(
+                                f"  [ANOMALY] Crash prob adjusted: {ml_crash_prob*100:.1f}% "
+                                f"-> {adjusted*100:.1f}% (confidence factor: {conf_factor:.2f})"
+                            )
                             ml_crash_prob = adjusted
 
             # Changepoint detection on recent returns
-            cp_detector = BayesianChangepoint(hazard_rate=1/252)
+            cp_detector = BayesianChangepoint(hazard_rate=1 / 252)
             recent_returns = data["Daily_Returns"].dropna()
             cp_report = cp_detector.recent_changepoint(recent_returns, window=90)
             if cp_report["detected"]:
-                print(f"  [CHANGEPOINT] Regime shift detected {cp_report['days_ago']} days ago "
-                      f"(prob={cp_report['max_prob']:.2f})")
+                print(
+                    f"  [CHANGEPOINT] Regime shift detected {cp_report['days_ago']} days ago "
+                    f"(prob={cp_report['max_prob']:.2f})"
+                )
             else:
-                print(f"  [CHANGEPOINT] No recent regime shift detected "
-                      f"(max_prob={cp_report['max_prob']:.2f})")
+                print(
+                    f"  [CHANGEPOINT] No recent regime shift detected "
+                    f"(max_prob={cp_report['max_prob']:.2f})"
+                )
         except Exception as e:
             print(f"  [ANOMALY] Detection failed: {e} — continuing without")
 
@@ -510,7 +564,9 @@ def main():
                     original_prob = ml_crash_prob
                     ml_crash_prob = adjust_crash_probability(ml_crash_prob, event_score_result)
                     if abs(ml_crash_prob - original_prob) > 0.01:
-                        print(f"  [OSINT] Crash prob adjusted: {original_prob*100:.1f}% → {ml_crash_prob*100:.1f}%")
+                        print(
+                            f"  [OSINT] Crash prob adjusted: {original_prob*100:.1f}% → {ml_crash_prob*100:.1f}%"
+                        )
             else:
                 print("  [OSINT] GDELT unavailable — using ML predictions only")
         except Exception as e:
@@ -525,13 +581,17 @@ def main():
             print("\n[MODULE 6c] Running validation checks...")
             from finpredict.validation import validate_regime, validate_external
             from finpredict.data.alternative_fetchers import (
-                fetch_aaii_sentiment, fetch_naaim_exposure, fetch_imf_gdp_forecast,
+                fetch_aaii_sentiment,
+                fetch_naaim_exposure,
+                fetch_imf_gdp_forecast,
                 fetch_fed_funds_futures,
             )
 
             regime_validation = validate_regime(data, current_regime, hmm_result)
-            print(f"  [VALIDATION] Regime: {regime_validation.regime} — "
-                  f"{'CONFIRMED' if regime_validation.confirmed else 'UNCONFIRMED'}")
+            print(
+                f"  [VALIDATION] Regime: {regime_validation.regime} — "
+                f"{'CONFIRMED' if regime_validation.confirmed else 'UNCONFIRMED'}"
+            )
             print(f"  [VALIDATION] Confidence: {regime_validation.confidence}")
             for note in regime_validation.notes:
                 print(f"    {note}")
@@ -556,12 +616,18 @@ def main():
                 alt_data["fed_futures"] = None
 
             external_validation = validate_external(
-                fred_data, ml_crash_prob, current_regime, data=data, alt_data=alt_data,
+                fred_data,
+                ml_crash_prob,
+                current_regime,
+                data=data,
+                alt_data=alt_data,
             )
-            print(f"  [VALIDATION] External agreement: "
-                  f"{external_validation.engine_agreement:.0%}")
-            print(f"  [VALIDATION] Consensus direction: "
-                  f"{external_validation.consensus_direction}")
+            print(
+                f"  [VALIDATION] External agreement: " f"{external_validation.engine_agreement:.0%}"
+            )
+            print(
+                f"  [VALIDATION] Consensus direction: " f"{external_validation.consensus_direction}"
+            )
             for alert in external_validation.divergence_alerts:
                 print(f"    [DIVERGENCE] {alert}")
         except Exception as e:
@@ -608,14 +674,19 @@ def main():
         hmm_vols = hmm_result.state_vols if hmm_result.success else None
 
         # Compute historical residuals for block bootstrap
-        historical_residuals = data["SP500"].pct_change().dropna().values[-252 * 10:]
+        historical_residuals = data["SP500"].pct_change().dropna().values[-252 * 10 :]
         if len(historical_residuals) < 504:
             print("  [WARN] Insufficient history for block bootstrap (<2yr); using i.i.d. sampling")
             historical_residuals = None
 
         mc_results = run_monte_carlo(
-            current_price, current_regime, current_risk,
-            crash_freq, current_vix, yield_curve, val_penalty,
+            current_price,
+            current_regime,
+            current_risk,
+            crash_freq,
+            current_vix,
+            yield_curve,
+            val_penalty,
             garch_vol=garch_vol,
             garch_persistence=garch_persistence,
             recession_prob=recession_prob,
@@ -645,7 +716,9 @@ def main():
         # ══════════════════════════════════════════════════════════
         forecast_days = get_forecast_days()
         sector_results = analyze_sectors(
-            data, sector_data, forecast_days,
+            data,
+            sector_data,
+            forecast_days,
             ml_predicted_return=ml_predicted_return,
             ml_crash_prob=ml_crash_prob,
             ml_return_p10=ml_return_p10,
@@ -656,10 +729,7 @@ def main():
         # ══════════════════════════════════════════════════════════
         # 12. STOCK ANALYSIS
         # ══════════════════════════════════════════════════════════
-        rf_rate = (
-            float(data["T3M"].dropna().iloc[-1])
-            if "T3M" in data.columns else 0.04
-        )
+        rf_rate = float(data["T3M"].dropna().iloc[-1]) if "T3M" in data.columns else 0.04
         rf_rate = max(0.0, min(rf_rate, 0.10))
 
         n_stocks = config.get("stocks", {}).get("screener_count", 20)
@@ -687,8 +757,16 @@ def main():
         output_path = str(output_dir / filename)
 
         generate_report(
-            data, mc_results, bt_results, sector_results, stock_results,
-            current_price, current_regime, current_risk, crash_freq, output_path,
+            data,
+            mc_results,
+            bt_results,
+            sector_results,
+            stock_results,
+            current_price,
+            current_regime,
+            current_risk,
+            crash_freq,
+            output_path,
             shap_contributions=shap_contributions,
             counterfactual_results=counterfactual_results,
             stress_results=stress_results,
@@ -705,8 +783,10 @@ def main():
         print("  ENGINE V7.0 ML-FIRST — ANALYSIS COMPLETE")
         print("=" * 90)
         print(f"  S&P 500:            ${current_price:,.2f}")
-        print(f"  Regime:             {current_regime}"
-              f" ({'HMM' if hmm_result.success else 'rule-based'})")
+        print(
+            f"  Regime:             {current_regime}"
+            f" ({'HMM' if hmm_result.success else 'rule-based'})"
+        )
         print(f"  Risk Score:         {current_risk:.2f}σ")
         if garch_vol is not None:
             print(f"  GARCH Vol:          {garch_vol*100:.1f}% annualized")
@@ -728,18 +808,29 @@ def main():
         print()
 
         print("  ═══ MONTE CARLO (UNCERTAINTY BANDS) ═══")
-        print(f"  5Y Projection:      ${mc_results['final_mean']:,.0f} "
-              f"({mc_results['total_return_pct']:+.1f}%)")
+        print(
+            f"  5Y Projection:      ${mc_results['final_mean']:,.0f} "
+            f"({mc_results['total_return_pct']:+.1f}%)"
+        )
         print(f"  Annualized:         {mc_results['annual_return_pct']:.1f}%")
         if ml_crash_prob is not None:
             print(f"  ML Crash (12m):     {ml_crash_prob*100:.1f}%")
         print(f"  MC Crash (12m):     {mc_results['crash_prob_1y']:.1f}% (conditioned on ML)")
-        if ml_crash_prob is not None and abs(ml_crash_prob * 100 - mc_results['crash_prob_1y']) > 10:
-            print(f"  [WARN] ML and MC crash probs diverge by "
-                  f"{abs(ml_crash_prob * 100 - mc_results['crash_prob_1y']):.0f}pp — calibration concern")
+        if (
+            ml_crash_prob is not None
+            and abs(ml_crash_prob * 100 - mc_results["crash_prob_1y"]) > 10
+        ):
+            print(
+                f"  [WARN] ML and MC crash probs diverge by "
+                f"{abs(ml_crash_prob * 100 - mc_results['crash_prob_1y']):.0f}pp — calibration concern"
+            )
         print(f"  5Y Crash Prob (MC): {mc_results['crash_prob_5y']:.1f}%")
-        print(f"  1Y CVaR (95%):      {mc_results.get('cvar_95_1y_pct', mc_results['cvar_95_pct']):.1f}%")
-        print(f"  5Y CVaR (95%):      {mc_results.get('cvar_95_5y_pct', mc_results['cvar_95_pct']):.1f}%")
+        print(
+            f"  1Y CVaR (95%):      {mc_results.get('cvar_95_1y_pct', mc_results['cvar_95_pct']):.1f}%"
+        )
+        print(
+            f"  5Y CVaR (95%):      {mc_results.get('cvar_95_5y_pct', mc_results['cvar_95_pct']):.1f}%"
+        )
         print()
 
         if len(bt_results) > 0:
