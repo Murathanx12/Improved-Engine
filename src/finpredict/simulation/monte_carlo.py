@@ -216,7 +216,6 @@ def simulate_paths(
     # Vol-of-vol: how much volatility itself fluctuates
     # Estimated from GARCH conditional volatility (passed as parameter)
     # Falls back to conservative default if not provided
-    sim_cfg.get("garch_derived_params", {})
     if xi is None:
         xi = 0.06  # Fallback when GARCH-derived value not available
     xi = float(xi)
@@ -707,7 +706,6 @@ def _validate_realism(
     """
     final = paths[-1]
     n_sims = paths.shape[1]
-    paths.shape[0] - 1
 
     # Annual return
     total_returns = final / start_price - 1

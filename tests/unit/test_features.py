@@ -15,18 +15,21 @@ def sample_data():
     dates = pd.bdate_range("2020-01-01", periods=n)
     sp500 = 3000 * np.cumprod(1 + rng.normal(0.0003, 0.012, n))
 
-    df = pd.DataFrame({
-        "SP500": sp500,
-        "VIX": rng.uniform(12, 35, n),
-        "T10Y": rng.uniform(1.0, 4.0, n),
-        "T3M": rng.uniform(0.5, 3.5, n),
-        "T30Y": rng.uniform(2.0, 5.0, n),
-        "HYG": rng.uniform(70, 90, n),
-        "LQD": rng.uniform(100, 130, n),
-        "Gold": rng.uniform(1500, 2000, n),
-        "NASDAQ": rng.uniform(10000, 16000, n),
-        "Russell": rng.uniform(1500, 2500, n),
-    }, index=dates)
+    df = pd.DataFrame(
+        {
+            "SP500": sp500,
+            "VIX": rng.uniform(12, 35, n),
+            "T10Y": rng.uniform(1.0, 4.0, n),
+            "T3M": rng.uniform(0.5, 3.5, n),
+            "T30Y": rng.uniform(2.0, 5.0, n),
+            "HYG": rng.uniform(70, 90, n),
+            "LQD": rng.uniform(100, 130, n),
+            "Gold": rng.uniform(1500, 2000, n),
+            "NASDAQ": rng.uniform(10000, 16000, n),
+            "Russell": rng.uniform(1500, 2500, n),
+        },
+        index=dates,
+    )
     return df
 
 
@@ -112,7 +115,7 @@ class TestFractionalDifferentiation:
         series = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
         result = _frac_diff_ffd(series, d=0.0)
         valid = result.dropna()
-        np.testing.assert_allclose(valid.values, series.iloc[-len(valid):].values, atol=1e-6)
+        np.testing.assert_allclose(valid.values, series.iloc[-len(valid) :].values, atol=1e-6)
 
 
 class TestERPFeatures:
@@ -141,13 +144,14 @@ class TestERPFeatures:
         """B8: The feature should be named price_to_avg_ratio, not cape_proxy."""
         import inspect
         from finpredict.ml import features as feat_mod
+
         source = inspect.getsource(feat_mod.build_feature_matrix)
-        assert "price_to_avg_ratio" in source, (
-            "Should use 'price_to_avg_ratio' instead of misleading 'cape_proxy'"
-        )
-        assert "cape_proxy" not in source, (
-            "Should NOT use 'cape_proxy' — it's not a real CAPE calculation"
-        )
+        assert (
+            "price_to_avg_ratio" in source
+        ), "Should use 'price_to_avg_ratio' instead of misleading 'cape_proxy'"
+        assert (
+            "cape_proxy" not in source
+        ), "Should NOT use 'cape_proxy' — it's not a real CAPE calculation"
 
 
 class TestFracDiffFeatures:
@@ -284,10 +288,13 @@ class TestFREDFeatures:
         """B9: Monthly FRED data must be shifted by ~21 trading days for publication lag."""
         import inspect
         from finpredict.ml import features as feat_mod
+
         source = inspect.getsource(feat_mod.build_feature_matrix)
         # Must detect monthly data and shift it
         assert "is_monthly" in source, "Should detect monthly FRED series"
-        assert "shift(21)" in source, "Monthly FRED data should be shifted by 21 trading days"
+        assert (
+            "shift(1)" in source
+        ), "Monthly FRED data should be shifted by 1 period before reindex"
 
 
 class TestDynamicCrashThreshold:
@@ -297,11 +304,13 @@ class TestDynamicCrashThreshold:
         """build_target_crash should accept dynamic_vix parameter."""
         import inspect
         from finpredict.ml.features import build_target_crash
+
         sig = inspect.signature(build_target_crash)
         assert "dynamic_vix" in sig.parameters, "build_target_crash must have dynamic_vix param"
 
     def test_dynamic_threshold_config_exists(self):
         from finpredict.config import config as cfg
+
         dyn = cfg.get("ml", {}).get("dynamic_crash_threshold", {})
         assert "vix_long_run_avg" in dyn
         assert "min_threshold" in dyn

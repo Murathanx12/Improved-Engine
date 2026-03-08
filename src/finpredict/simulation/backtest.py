@@ -18,14 +18,14 @@ WHAT'S CHANGED:
 
 HOW IT WORKS:
     Walk-forward backtesting ensures ZERO data leakage:
-    
+
     For each prediction date t (every 3 months from 2000 to present):
         1. Build features using ONLY data up to date t
         2. Train ML models on ALL data before t (expanding window)
         3. Make predictions for the next 3m, 6m, 12m
         4. Record predictions
         5. After simulation ends, compare predictions to actual outcomes
-    
+
     This is the honest test: can the model predict the future using
     only information available at the time of prediction?
 """
@@ -37,8 +37,9 @@ from tqdm import tqdm
 from finpredict.config import config, get_institutional_return
 from finpredict.simulation.monte_carlo import simulate_paths
 from finpredict.ml.features import (
-    build_feature_matrix, build_target_crash_multi, build_target_return_multi,
-    build_target_crash_ensemble,
+    build_feature_matrix,
+    build_target_crash_multi,
+    build_target_return_multi,
 )
 from finpredict.ml.crash_model import CrashPredictor
 from finpredict.ml.return_model import ReturnPredictor
@@ -96,9 +97,6 @@ def run_backtest(
     crash_targets = build_target_crash_multi(data, threshold=-risk_cfg["crash_threshold"])
     return_targets = build_target_return_multi(data)
 
-    # Multi-threshold severity targets for crash ensemble (10%, 15%, 20%)
-    severity_targets = build_target_crash_ensemble(data)
-
     # ── Initialize ML models ──────────────────────────────────────
     crash_model = CrashPredictor(n_estimators=800)
     return_model = ReturnPredictor(n_estimators=600)
@@ -109,8 +107,8 @@ def run_backtest(
     cox_model = CrashSurvivalModel()
 
     last_train_idx = -9999
-    retrain_interval = 63         # Retrain every ~3 months (was 126 in v6)
-    min_train_samples = 1260      # Need 5+ years of data
+    retrain_interval = 63  # Retrain every ~3 months (was 126 in v6)
+    min_train_samples = 1260  # Need 5+ years of data
 
     # Collectors for meta-stacker OOS predictions
     oos_predictions = {"lgb": {}, "xgb": {}, "lstm": {}, "tcn": {}, "cox": {}}
@@ -130,41 +128,46 @@ def run_backtest(
         # ── Retrain ML models periodically ────────────────────────
         if idx - last_train_idx >= retrain_interval:
             crash_result = crash_model.train(
-                features, crash_targets,
+                features,
+                crash_targets,
                 train_end_idx=idx,
                 min_train_samples=min_train_samples,
-                severity_targets=severity_targets,
             )
             return_result = return_model.train(
-                features, return_targets,
+                features,
+                return_targets,
                 train_end_idx=idx,
                 min_train_samples=min_train_samples,
             )
 
             # Train XGBoost peer model
             xgb_result = xgb_model.train(
-                features, crash_targets,
+                features,
+                crash_targets,
                 train_end_idx=idx,
                 min_train_samples=min_train_samples,
             )
 
             # Train LSTM + TCN temporal ensemble
             temporal_result = temporal_model.train(
-                features, crash_targets,
+                features,
+                crash_targets,
                 train_end_idx=idx,
                 min_sequences=400,
             )
 
             # Train crash timing classifier
             crash_timing.train(
-                features, data,
+                features,
+                data,
                 train_end_idx=idx,
                 min_train_samples=min_train_samples,
             )
 
             # Train Cox survival model
             cox_model.train(
-                features, crash_targets,
+                features,
+                crash_targets,
                 train_end_idx=idx,
                 min_train_samples=min_train_samples,
                 data=data,
@@ -192,34 +195,46 @@ def run_backtest(
 
             if crash_result.get("success") and return_result.get("success"):
                 last_train_idx = idx
-                ml_train_log.append({
-                    "date": pred_date,
-                    "crash_val_auc": crash_result.get("val_auc", 0),
-                    "crash_val_brier": crash_result.get("val_brier", 0),
-                    "crash_pred_range": crash_result.get("pred_range", (0, 0)),
-                    "crash_pred_std": crash_result.get("pred_std", 0),
-                    "crash_discrimination": crash_result.get("discrimination", "UNKNOWN"),
-                    "return_val_mae": return_result.get("val_mae", 0),
-                    "return_val_corr": return_result.get("val_corr", 0),
-                    "return_pred_range": return_result.get("pred_range", (0, 0)),
-                    "return_skill": return_result.get("skill_score", 0),
-                    "return_quantile_cov": return_result.get("quantile_coverage", 0),
-                    "xgb_val_brier": xgb_result.get("val_brier", 0) if xgb_result.get("success") else None,
-                    "temporal_val_loss": temporal_result.get("lstm_val_loss", None) if temporal_result.get("success") else None,
-                })
+                ml_train_log.append(
+                    {
+                        "date": pred_date,
+                        "crash_val_auc": crash_result.get("val_auc", 0),
+                        "crash_val_brier": crash_result.get("val_brier", 0),
+                        "crash_pred_range": crash_result.get("pred_range", (0, 0)),
+                        "crash_pred_std": crash_result.get("pred_std", 0),
+                        "crash_discrimination": crash_result.get("discrimination", "UNKNOWN"),
+                        "return_val_mae": return_result.get("val_mae", 0),
+                        "return_val_corr": return_result.get("val_corr", 0),
+                        "return_pred_range": return_result.get("pred_range", (0, 0)),
+                        "return_skill": return_result.get("skill_score", 0),
+                        "return_quantile_cov": return_result.get("quantile_coverage", 0),
+                        "xgb_val_brier": xgb_result.get("val_brier", 0)
+                        if xgb_result.get("success")
+                        else None,
+                        "temporal_val_loss": temporal_result.get("lstm_val_loss", None)
+                        if temporal_result.get("success")
+                        else None,
+                    }
+                )
 
         if not crash_model.is_trained or not return_model.is_trained:
             continue
 
         # ── Get ML predictions ────────────────────────────────────
-        current_features = features.iloc[idx:idx+1]
+        current_features = features.iloc[idx : idx + 1]
         try:
             # LightGBM predictions
             lgb_crash_12m = float(crash_model.predict_proba(current_features, "12m")[0])
-            lgb_crash_6m = float(crash_model.predict_proba(current_features, "6m")[0]) \
-                if "6m" in crash_model.models else None
-            lgb_crash_3m = float(crash_model.predict_proba(current_features, "3m")[0]) \
-                if "3m" in crash_model.models else None
+            lgb_crash_6m = (
+                float(crash_model.predict_proba(current_features, "6m")[0])
+                if "6m" in crash_model.models
+                else None
+            )
+            lgb_crash_3m = (
+                float(crash_model.predict_proba(current_features, "3m")[0])
+                if "3m" in crash_model.models
+                else None
+            )
 
             # XGBoost predictions
             xgb_crash_12m = None
@@ -235,7 +250,7 @@ def run_backtest(
             tcn_crash_3m = None
             if temporal_model.is_trained:
                 seq_start = max(0, idx - temporal_model.WINDOW_SIZE + 1)
-                seq_features = features.iloc[seq_start:idx+1]
+                seq_features = features.iloc[seq_start : idx + 1]
                 if len(seq_features) >= temporal_model.WINDOW_SIZE:
                     try:
                         indiv = temporal_model.predict_individual(seq_features, "12m")
@@ -289,37 +304,42 @@ def run_backtest(
             oos_predictions["tcn"]["12m"].append(tcn_crash_12m)
             oos_predictions["cox"]["12m"].append(cox_crash_12m)
 
-            # Collect 6m and 3m OOS predictions for multi-horizon meta-stacker
-            if lgb_crash_6m is not None:
-                oos_predictions["lgb"]["6m"].append(lgb_crash_6m)
-                xgb_6m = None
-                if xgb_model.is_trained and "6m" in xgb_model.models:
-                    xgb_6m = float(xgb_model.predict_proba(current_features, "6m")[0])
-                oos_predictions["xgb"]["6m"].append(xgb_6m)
-                oos_predictions["lstm"]["6m"].append(lstm_crash_6m)
-                oos_predictions["tcn"]["6m"].append(tcn_crash_6m)
-                cox_6m = None
-                if cox_model.is_trained:
-                    try:
-                        cox_6m = float(cox_model.predict_proba(current_features, "6m")[0])
-                    except Exception:
-                        pass
-                oos_predictions["cox"]["6m"].append(cox_6m)
-            if lgb_crash_3m is not None:
-                oos_predictions["lgb"]["3m"].append(lgb_crash_3m)
-                xgb_3m = None
-                if xgb_model.is_trained and "3m" in xgb_model.models:
-                    xgb_3m = float(xgb_model.predict_proba(current_features, "3m")[0])
-                oos_predictions["xgb"]["3m"].append(xgb_3m)
-                oos_predictions["lstm"]["3m"].append(lstm_crash_3m)
-                oos_predictions["tcn"]["3m"].append(tcn_crash_3m)
-                cox_3m = None
-                if cox_model.is_trained:
-                    try:
-                        cox_3m = float(cox_model.predict_proba(current_features, "3m")[0])
-                    except Exception:
-                        pass
-                oos_predictions["cox"]["3m"].append(cox_3m)
+            # Collect 6m and 3m OOS predictions for multi-horizon meta-stacker.
+            # Always append (use NaN placeholder when model unavailable) to
+            # keep arrays aligned across all horizons.
+            xgb_6m = None
+            if xgb_model.is_trained and "6m" in xgb_model.models:
+                xgb_6m = float(xgb_model.predict_proba(current_features, "6m")[0])
+            oos_predictions["lgb"]["6m"].append(
+                lgb_crash_6m if lgb_crash_6m is not None else np.nan
+            )
+            oos_predictions["xgb"]["6m"].append(xgb_6m)
+            oos_predictions["lstm"]["6m"].append(lstm_crash_6m)
+            oos_predictions["tcn"]["6m"].append(tcn_crash_6m)
+            cox_6m = None
+            if cox_model.is_trained:
+                try:
+                    cox_6m = float(cox_model.predict_proba(current_features, "6m")[0])
+                except Exception:
+                    pass
+            oos_predictions["cox"]["6m"].append(cox_6m)
+
+            xgb_3m = None
+            if xgb_model.is_trained and "3m" in xgb_model.models:
+                xgb_3m = float(xgb_model.predict_proba(current_features, "3m")[0])
+            oos_predictions["lgb"]["3m"].append(
+                lgb_crash_3m if lgb_crash_3m is not None else np.nan
+            )
+            oos_predictions["xgb"]["3m"].append(xgb_3m)
+            oos_predictions["lstm"]["3m"].append(lstm_crash_3m)
+            oos_predictions["tcn"]["3m"].append(tcn_crash_3m)
+            cox_3m = None
+            if cox_model.is_trained:
+                try:
+                    cox_3m = float(cox_model.predict_proba(current_features, "3m")[0])
+                except Exception:
+                    pass
+            oos_predictions["cox"]["3m"].append(cox_3m)
 
             # Meta-stacker ensemble prediction
             if meta_stacker.is_trained:
@@ -346,10 +366,16 @@ def run_backtest(
             ml_crash_3m = lgb_crash_3m
 
             ml_return_12m = float(return_model.predict(current_features, "12m")[0])
-            ml_return_6m = float(return_model.predict(current_features, "6m")[0]) \
-                if "6m" in return_model.models else None
-            ml_return_3m = float(return_model.predict(current_features, "3m")[0]) \
-                if "3m" in return_model.models else None
+            ml_return_6m = (
+                float(return_model.predict(current_features, "6m")[0])
+                if "6m" in return_model.models
+                else None
+            )
+            ml_return_3m = (
+                float(return_model.predict(current_features, "3m")[0])
+                if "3m" in return_model.models
+                else None
+            )
 
             # Quantile predictions for uncertainty
             quantiles = return_model.predict_quantiles(current_features, "12m")
@@ -360,7 +386,7 @@ def run_backtest(
 
         # ── Monte Carlo for uncertainty bands ─────────────────────
         lookback = bt_cfg["lookback_years"] * 252
-        hist = data.iloc[max(0, idx - lookback):idx]
+        hist = data.iloc[max(0, idx - lookback) : idx]
         if len(hist) < 252:
             continue
 
@@ -373,8 +399,14 @@ def run_backtest(
 
         base_scenario = {"drift_adj": 0, "vol_mult": 1.0, "crash_mult": 1.0}
         paths = simulate_paths(
-            start_price, hist_mu, sigma, forward_days,
-            bt_cfg["simulations_per_point"], crash_freq, risk, base_scenario,
+            start_price,
+            hist_mu,
+            sigma,
+            forward_days,
+            bt_cfg["simulations_per_point"],
+            crash_freq,
+            risk,
+            base_scenario,
             ml_crash_prob=ml_crash_12m,
             ml_predicted_return=ml_return_12m,
             ml_return_p10=ml_return_p10,
@@ -395,7 +427,7 @@ def run_backtest(
 
         # Check for actual crashes
         def _check_crash(start_idx, end_idx, thresh=-risk_cfg["crash_threshold"]):
-            fwd = data["SP500"].iloc[start_idx:end_idx + 1]
+            fwd = data["SP500"].iloc[start_idx : end_idx + 1]
             pk = fwd.expanding().max()
             dd = ((fwd - pk) / pk).min()
             return dd <= thresh
@@ -404,12 +436,13 @@ def run_backtest(
         actual_crash_6m = _check_crash(idx, actual_idx_6m)
         actual_crash_3m = _check_crash(idx, actual_idx_3m)
 
-        # Collect OOS targets for meta-stacker training (all horizons)
+        # Collect OOS targets for meta-stacker training (all horizons).
+        # Always append to keep aligned with prediction arrays.
         if "12m" in oos_targets:
             oos_targets["12m"].append(float(actual_crash_12m))
-        if "6m" in oos_targets and lgb_crash_6m is not None:
+        if "6m" in oos_targets:
             oos_targets["6m"].append(float(actual_crash_6m))
-        if "3m" in oos_targets and lgb_crash_3m is not None:
+        if "3m" in oos_targets:
             oos_targets["3m"].append(float(actual_crash_3m))
 
         # MC crash probability (secondary)
@@ -421,44 +454,46 @@ def run_backtest(
         pct_error = (error / actual_price_12m) * 100
         within_bounds = (actual_price_12m >= pred_p05) and (actual_price_12m <= pred_p95)
 
-        results.append({
-            "date": pred_date,
-            "start_price": start_price,
-            "actual_price": actual_price_12m,
-            "pred_mean": pred_mean,
-            "pred_p95": pred_p95,
-            "pred_p05": pred_p05,
-            "pct_error": pct_error,
-            "within_bounds": within_bounds,
-            # ML crash predictions (ENSEMBLE — PRIMARY)
-            "ml_crash_12m": ml_crash_12m,
-            "ml_crash_6m": ml_crash_6m,
-            "ml_crash_3m": ml_crash_3m,
-            # Per-model crash predictions (for analysis)
-            "lgb_crash_12m": lgb_crash_12m,
-            "xgb_crash_12m": xgb_crash_12m,
-            "lstm_crash_12m": lstm_crash_12m,
-            "tcn_crash_12m": tcn_crash_12m,
-            "cox_crash_12m": cox_crash_12m,
-            # ML return predictions (PRIMARY)
-            "ml_return_12m": ml_return_12m,
-            "ml_return_6m": ml_return_6m,
-            "ml_return_3m": ml_return_3m,
-            "ml_return_p10": ml_return_p10,
-            "ml_return_p90": ml_return_p90,
-            # Actual outcomes
-            "actual_crash_12m": actual_crash_12m,
-            "actual_crash_6m": actual_crash_6m,
-            "actual_crash_3m": actual_crash_3m,
-            "actual_return_12m": actual_return_12m,
-            "actual_return_6m": float(data["SP500"].iloc[actual_idx_6m]) / start_price - 1,
-            "actual_return_3m": float(data["SP500"].iloc[actual_idx_3m]) / start_price - 1,
-            # MC secondary
-            "sim_crash_prob": sim_crash,
-            # Context
-            "risk_score": risk,
-            "direction_correct": (pred_mean > start_price) == (actual_price_12m > start_price),
-        })
+        results.append(
+            {
+                "date": pred_date,
+                "start_price": start_price,
+                "actual_price": actual_price_12m,
+                "pred_mean": pred_mean,
+                "pred_p95": pred_p95,
+                "pred_p05": pred_p05,
+                "pct_error": pct_error,
+                "within_bounds": within_bounds,
+                # ML crash predictions (ENSEMBLE — PRIMARY)
+                "ml_crash_12m": ml_crash_12m,
+                "ml_crash_6m": ml_crash_6m,
+                "ml_crash_3m": ml_crash_3m,
+                # Per-model crash predictions (for analysis)
+                "lgb_crash_12m": lgb_crash_12m,
+                "xgb_crash_12m": xgb_crash_12m,
+                "lstm_crash_12m": lstm_crash_12m,
+                "tcn_crash_12m": tcn_crash_12m,
+                "cox_crash_12m": cox_crash_12m,
+                # ML return predictions (PRIMARY)
+                "ml_return_12m": ml_return_12m,
+                "ml_return_6m": ml_return_6m,
+                "ml_return_3m": ml_return_3m,
+                "ml_return_p10": ml_return_p10,
+                "ml_return_p90": ml_return_p90,
+                # Actual outcomes
+                "actual_crash_12m": actual_crash_12m,
+                "actual_crash_6m": actual_crash_6m,
+                "actual_crash_3m": actual_crash_3m,
+                "actual_return_12m": actual_return_12m,
+                "actual_return_6m": float(data["SP500"].iloc[actual_idx_6m]) / start_price - 1,
+                "actual_return_3m": float(data["SP500"].iloc[actual_idx_3m]) / start_price - 1,
+                # MC secondary
+                "sim_crash_prob": sim_crash,
+                # Context
+                "risk_score": risk,
+                "direction_correct": (pred_mean > start_price) == (actual_price_12m > start_price),
+            }
+        )
 
     bt = pd.DataFrame(results)
 
@@ -500,7 +535,9 @@ def run_backtest(
             # VIX baseline (if VIX data available in backtest context)
             if "vix" in bt.columns:
                 bss_vix = brier_skill_score(
-                    y_pred, y_true, baseline="vix25",
+                    y_pred,
+                    y_true,
+                    baseline="vix25",
                     vix_series=bt["vix"],
                 )
                 eval_results["bss_vs_vix"] = bss_vix
@@ -537,6 +574,7 @@ def run_backtest(
 # RESULTS PRINTING & METRICS
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def _print_results(bt, crash_model, return_model, ml_train_log):
     """Print comprehensive ML evaluation results with discrimination focus."""
     mape = np.abs(bt["pct_error"]).mean()
@@ -561,6 +599,7 @@ def _print_results(bt, crash_model, return_model, ml_train_log):
 
     try:
         from sklearn.metrics import roc_auc_score
+
         crash_auc = roc_auc_score(bt_c["actual_crash_int"], bt["ml_crash_12m"])
     except Exception:
         crash_auc = 0.5
@@ -588,8 +627,10 @@ def _print_results(bt, crash_model, return_model, ml_train_log):
         if len(subset) > 0:
             actual_rate = float(subset["actual_crash_12m"].mean() * 100)
             pred_avg = float(subset["ml_crash_12m"].mean() * 100)
-            print(f"    [{lo*100:.0f}-{hi*100:.0f}%]: predicted avg {pred_avg:.1f}%, "
-                  f"actual {actual_rate:.1f}% (n={len(subset)})")
+            print(
+                f"    [{lo*100:.0f}-{hi*100:.0f}%]: predicted avg {pred_avg:.1f}%, "
+                f"actual {actual_rate:.1f}% (n={len(subset)})"
+            )
         else:
             print(f"    [{lo*100:.0f}-{hi*100:.0f}%]: no predictions")
 
@@ -600,9 +641,11 @@ def _print_results(bt, crash_model, return_model, ml_train_log):
     cal_low = float(low["actual_crash_12m"].mean() * 100) if len(low) > 0 else 0
     cal_med = float(med["actual_crash_12m"].mean() * 100) if len(med) > 0 else 0
     cal_high = float(high["actual_crash_12m"].mean() * 100) if len(high) > 0 else 0
-    print(f"  Summary: Low<15%: {cal_low:.0f}% actual (n={len(low)}) | "
-          f"Med 15-40%: {cal_med:.0f}% actual (n={len(med)}) | "
-          f"High>40%: {cal_high:.0f}% actual (n={len(high)})")
+    print(
+        f"  Summary: Low<15%: {cal_low:.0f}% actual (n={len(low)}) | "
+        f"Med 15-40%: {cal_med:.0f}% actual (n={len(med)}) | "
+        f"High>40%: {cal_high:.0f}% actual (n={len(high)})"
+    )
 
     # ═══════════════════════════════════════════════════════════════
     # ML RETURN MODEL EVALUATION
@@ -622,8 +665,12 @@ def _print_results(bt, crash_model, return_model, ml_train_log):
         q_mask = bt["ml_return_p10"].notna() & bt["ml_return_p90"].notna()
         if q_mask.sum() > 0:
             bt_q = bt[q_mask]
-            q_coverage = float(((bt_q["actual_return_12m"] >= bt_q["ml_return_p10"]) &
-                               (bt_q["actual_return_12m"] <= bt_q["ml_return_p90"])).mean())
+            q_coverage = float(
+                (
+                    (bt_q["actual_return_12m"] >= bt_q["ml_return_p10"])
+                    & (bt_q["actual_return_12m"] <= bt_q["ml_return_p90"])
+                ).mean()
+            )
         else:
             q_coverage = 0
     else:
@@ -648,7 +695,7 @@ def _print_results(bt, crash_model, return_model, ml_train_log):
         print(f"  Last Crash AUC:       {last.get('crash_val_auc', 0):.3f}")
         print(f"  Last Return Corr:     {last.get('return_val_corr', 0):.3f}")
         print(f"  Last Return Skill:    {last.get('return_skill', 0):.3f}")
-        disc = last.get('crash_discrimination', 'UNKNOWN')
+        disc = last.get("crash_discrimination", "UNKNOWN")
         print(f"  Discrimination:       {disc}")
 
     # Top features
@@ -676,6 +723,7 @@ def _compute_metrics(bt, crash_model, return_model, ml_train_log):
 
     try:
         from sklearn.metrics import roc_auc_score
+
         crash_auc = float(roc_auc_score(bt_c["actual_crash_int"], bt["ml_crash_12m"]))
     except Exception:
         crash_auc = 0.5
@@ -700,7 +748,9 @@ def _compute_metrics(bt, crash_model, return_model, ml_train_log):
         "cal_low": float(low["actual_crash_12m"].mean() * 100) if len(low) > 0 else 0,
         "cal_med": float(med["actual_crash_12m"].mean() * 100) if len(med) > 0 else 0,
         "cal_high": float(high["actual_crash_12m"].mean() * 100) if len(high) > 0 else 0,
-        "n_low": len(low), "n_med": len(med), "n_high": len(high),
+        "n_low": len(low),
+        "n_med": len(med),
+        "n_high": len(high),
         "ml_train_log": ml_train_log,
         "crash_model": crash_model,
         "return_model": return_model,
@@ -731,9 +781,7 @@ def _compute_metrics(bt, crash_model, return_model, ml_train_log):
         advanced["signal_drawdown"] = signal_max_drawdown(bt)
 
         consensus_ret = get_institutional_return()
-        advanced["directional_vs_consensus"] = directional_accuracy_vs_consensus(
-            bt, consensus_ret
-        )
+        advanced["directional_vs_consensus"] = directional_accuracy_vs_consensus(bt, consensus_ret)
 
         metrics["advanced_metrics"] = advanced
 
@@ -742,24 +790,32 @@ def _compute_metrics(bt, crash_model, return_model, ml_train_log):
         if "lead_time" in advanced:
             lt = advanced["lead_time"]
             status = "OK" if lt["mean_lead_days"] > 30 else "WARN"
-            print(f"  Lead Time Accuracy:   {lt['mean_lead_days']:.0f} days avg "
-                  f"({lt['n_detected']}/{lt['n_crashes']} detected) [{status}]")
+            print(
+                f"  Lead Time Accuracy:   {lt['mean_lead_days']:.0f} days avg "
+                f"({lt['n_detected']}/{lt['n_crashes']} detected) [{status}]"
+            )
         fa = advanced["false_alarm"]
         fa_status = "OK" if fa["rate"] < 0.30 else "WARN"
-        print(f"  False Alarm Rate:     {fa['rate']*100:.0f}% "
-              f"({fa['n_false_alarms']}/{fa['n_alarms']} false) [{fa_status}]")
+        print(
+            f"  False Alarm Rate:     {fa['rate']*100:.0f}% "
+            f"({fa['n_false_alarms']}/{fa['n_alarms']} false) [{fa_status}]"
+        )
         if "missed_crash" in advanced:
             mc = advanced["missed_crash"]
             mc_status = "OK" if mc["rate"] < 0.20 else "WARN"
-            print(f"  Missed Crash Rate:    {mc['rate']*100:.0f}% "
-                  f"({mc['n_missed']}/{mc['n_crashes']} missed) [{mc_status}]")
+            print(
+                f"  Missed Crash Rate:    {mc['rate']*100:.0f}% "
+                f"({mc['n_missed']}/{mc['n_crashes']} missed) [{mc_status}]"
+            )
         sd = advanced["signal_drawdown"]
         sd_status = "OK" if sd["max_drawdown"] < 0.25 else "WARN"
         print(f"  Signal Max Drawdown:  {sd['max_drawdown']*100:.1f}% [{sd_status}]")
         dvc = advanced["directional_vs_consensus"]
         dvc_status = "OK" if dvc["engine_correct_rate"] > 0.55 else "WARN"
-        print(f"  Dir. vs Consensus:    {dvc['engine_correct_rate']*100:.0f}% correct "
-              f"({dvc['n_engine_correct']}/{dvc['n_divergences']} divergences) [{dvc_status}]")
+        print(
+            f"  Dir. vs Consensus:    {dvc['engine_correct_rate']*100:.0f}% correct "
+            f"({dvc['n_engine_correct']}/{dvc['n_divergences']} divergences) [{dvc_status}]"
+        )
 
     except Exception as e:
         print(f"  [EVAL] Advanced metrics failed: {e}")
@@ -800,6 +856,7 @@ def _extract_crash_periods(bt: pd.DataFrame) -> pd.DataFrame:
 # ═══════════════════════════════════════════════════════════════════════
 # PAPER-READY RESULTS TABLE
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
     """Build comprehensive per-model, per-horizon results table for publication.
@@ -900,17 +957,19 @@ def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
         rel = reliability_diagram(yp, yt)
         pred_std = float(np.std(yp))
 
-        bss_rows.append({
-            "Model": model_name,
-            "N": int(valid.sum()),
-            "Brier": f"{bs:.4f}",
-            "BSS_Clim": f"{bss_clim:+.4f}",
-            "BSS_VIX25": f"{bss_vix:+.4f}" if not np.isnan(bss_vix) else "—",
-            "BSS_YC": f"{bss_yc:+.4f}" if not np.isnan(bss_yc) else "—",
-            "AUC": f"{auc:.3f}" if not np.isnan(auc) else "—",
-            "ECE": f"{rel['calibration_error']:.4f}",
-            "Pred_Std": f"{pred_std:.4f}",
-        })
+        bss_rows.append(
+            {
+                "Model": model_name,
+                "N": int(valid.sum()),
+                "Brier": f"{bs:.4f}",
+                "BSS_Clim": f"{bss_clim:+.4f}",
+                "BSS_VIX25": f"{bss_vix:+.4f}" if not np.isnan(bss_vix) else "—",
+                "BSS_YC": f"{bss_yc:+.4f}" if not np.isnan(bss_yc) else "—",
+                "AUC": f"{auc:.3f}" if not np.isnan(auc) else "—",
+                "ECE": f"{rel['calibration_error']:.4f}",
+                "Pred_Std": f"{pred_std:.4f}",
+            }
+        )
 
     bss_df = pd.DataFrame(bss_rows)
     if not bss_df.empty:
@@ -919,9 +978,11 @@ def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
         print(header)
         print(f"  {'─'*90}")
         for _, row in bss_df.iterrows():
-            print(f"  {row['Model']:<16} {row['N']:>5} {row['Brier']:>8} {row['BSS_Clim']:>10} "
-                  f"{row['BSS_VIX25']:>10} {row['BSS_YC']:>10} {row['AUC']:>6} "
-                  f"{row['ECE']:>8} {row['Pred_Std']:>8}")
+            print(
+                f"  {row['Model']:<16} {row['N']:>5} {row['Brier']:>8} {row['BSS_Clim']:>10} "
+                f"{row['BSS_VIX25']:>10} {row['BSS_YC']:>10} {row['AUC']:>6} "
+                f"{row['ECE']:>8} {row['Pred_Std']:>8}"
+            )
 
     # ── Table 1b: Multi-horizon BSS (Ensemble only) ─────────────────
     print("\n  ═══════════════════════════════════════════════════════════")
@@ -948,21 +1009,27 @@ def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
             auc = float("nan")
 
         base_rate = float(yt.mean())
-        horizon_rows.append({
-            "Horizon": horizon,
-            "N": len(yp),
-            "Base_Rate": f"{base_rate:.1%}",
-            "Brier": f"{bs:.4f}",
-            "BSS_Clim": f"{bss_clim:+.4f}",
-            "AUC": f"{auc:.3f}" if not np.isnan(auc) else "—",
-        })
+        horizon_rows.append(
+            {
+                "Horizon": horizon,
+                "N": len(yp),
+                "Base_Rate": f"{base_rate:.1%}",
+                "Brier": f"{bs:.4f}",
+                "BSS_Clim": f"{bss_clim:+.4f}",
+                "AUC": f"{auc:.3f}" if not np.isnan(auc) else "—",
+            }
+        )
 
     if horizon_rows:
-        print(f"  {'Horizon':<10} {'N':>5} {'Base Rate':>10} {'Brier':>8} {'BSS_Clim':>10} {'AUC':>6}")
+        print(
+            f"  {'Horizon':<10} {'N':>5} {'Base Rate':>10} {'Brier':>8} {'BSS_Clim':>10} {'AUC':>6}"
+        )
         print(f"  {'─'*55}")
         for row in horizon_rows:
-            print(f"  {row['Horizon']:<10} {row['N']:>5} {row['Base_Rate']:>10} "
-                  f"{row['Brier']:>8} {row['BSS_Clim']:>10} {row['AUC']:>6}")
+            print(
+                f"  {row['Horizon']:<10} {row['N']:>5} {row['Base_Rate']:>10} "
+                f"{row['Brier']:>8} {row['BSS_Clim']:>10} {row['AUC']:>6}"
+            )
 
     # ── Table 2: Operational Metrics ────────────────────────────────
     print("\n  ═══════════════════════════════════════════════════════════")
@@ -995,23 +1062,29 @@ def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
         if not crash_periods.empty:
             mc = missed_crash_rate(bt_valid, crash_periods, prob_col=col, safe_threshold=0.30)
 
-        op_rows.append({
-            "Model": model_name,
-            "Lead_Days": f"{lt['mean_lead_days']:.0f}",
-            "Detected": f"{lt['n_detected']}/{lt['n_crashes']}",
-            "FA_Rate": f"{fa['rate']:.0%}",
-            "FA_Count": f"{fa['n_false_alarms']}/{fa['n_alarms']}",
-            "Miss_Rate": f"{mc['rate']:.0%}",
-            "Miss_Count": f"{mc['n_missed']}/{mc['n_crashes']}",
-        })
+        op_rows.append(
+            {
+                "Model": model_name,
+                "Lead_Days": f"{lt['mean_lead_days']:.0f}",
+                "Detected": f"{lt['n_detected']}/{lt['n_crashes']}",
+                "FA_Rate": f"{fa['rate']:.0%}",
+                "FA_Count": f"{fa['n_false_alarms']}/{fa['n_alarms']}",
+                "Miss_Rate": f"{mc['rate']:.0%}",
+                "Miss_Count": f"{mc['n_missed']}/{mc['n_crashes']}",
+            }
+        )
 
     if op_rows:
-        print(f"  {'Model':<16} {'Lead(d)':>8} {'Det.':>6} {'FA Rate':>8} {'FA':>6} {'Miss%':>7} {'Miss':>6}")
+        print(
+            f"  {'Model':<16} {'Lead(d)':>8} {'Det.':>6} {'FA Rate':>8} {'FA':>6} {'Miss%':>7} {'Miss':>6}"
+        )
         print(f"  {'─'*65}")
         for row in op_rows:
-            print(f"  {row['Model']:<16} {row['Lead_Days']:>8} {row['Detected']:>6} "
-                  f"{row['FA_Rate']:>8} {row['FA_Count']:>6} {row['Miss_Rate']:>7} "
-                  f"{row['Miss_Count']:>6}")
+            print(
+                f"  {row['Model']:<16} {row['Lead_Days']:>8} {row['Detected']:>6} "
+                f"{row['FA_Rate']:>8} {row['FA_Count']:>6} {row['Miss_Rate']:>7} "
+                f"{row['Miss_Count']:>6}"
+            )
 
     # ── Table 3: Per-crash lead time detail ─────────────────────────
     if not crash_periods.empty:
@@ -1019,7 +1092,9 @@ def _build_paper_results_table(bt: pd.DataFrame, data: pd.DataFrame) -> dict:
         print("  TABLE 3: Per-Crash Detection Detail (Meta-Ensemble)")
         print("  ═══════════════════════════════════════════════════════════")
 
-        lt_detail = lead_time_accuracy(bt, crash_periods, prob_col="ml_crash_12m", prob_threshold=0.40)
+        lt_detail = lead_time_accuracy(
+            bt, crash_periods, prob_col="ml_crash_12m", prob_threshold=0.40
+        )
         if lt_detail["per_crash"]:
             print(f"  {'Crash Start':<14} {'Detected':>10} {'Lead Days':>10} {'Alert Prob':>11}")
             print(f"  {'─'*50}")

@@ -245,7 +245,6 @@ def fetch_fed_funds_futures() -> Optional[dict]:
     """
     try:
         import yfinance as yf
-        
 
         # Current effective fed funds rate proxy from FRED
         # Use 3-month T-Bill as fed funds proxy (publicly available)

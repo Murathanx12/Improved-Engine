@@ -156,11 +156,14 @@ def forecast_volatility(
             extended[: vol_paths.shape[0]] = vol_paths
             # Long-run variance for extension
             persistence = garch.alpha + garch.gamma / 2 + garch.beta
-            lr_var = garch.omega / (1 - persistence) if persistence < 1 else garch.omega * 100
+            persistence_clamped = min(persistence, 0.999)
+            lr_var = garch.omega / (1 - persistence_clamped)
             lr_vol = np.sqrt(lr_var) / 100
             for t in range(vol_paths.shape[0], horizon):
-                # Mean-revert toward long-run vol
-                extended[t] = extended[t - 1] * 0.99 + lr_vol * 0.01
+                # Mean-revert toward long-run vol using GARCH persistence
+                extended[t] = extended[t - 1] * persistence_clamped + lr_vol * (
+                    1 - persistence_clamped
+                )
             vol_paths = extended
 
         return vol_paths

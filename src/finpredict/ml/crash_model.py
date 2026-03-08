@@ -57,8 +57,6 @@ if _HAS_LIGHTGBM:
 
         Uses Platt scaling (logistic sigmoid) for calibration instead of
         isotonic regression, which is more robust with sparse crash data.
-        Severity ensemble models are trained for feature analysis only
-        and are NOT blended into final predictions.
         """
 
         # Key features for the simple logistic regression model.
@@ -81,8 +79,6 @@ if _HAS_LIGHTGBM:
             self.random_state = random_state
             self.models = {}  # {horizon: lgb model}
             self.calibrators = {}  # {horizon: Platt scaler}
-            self.severity_models = {}  # {severity: lgb model} for analysis
-            self.severity_calibrators = {}  # {severity: Platt scaler}
             self.logistic_models = {}  # {horizon: LogisticRegression}
             self.feature_names = None
             self.feature_importances_ = None
@@ -98,7 +94,6 @@ if _HAS_LIGHTGBM:
             targets: dict | pd.Series,
             train_end_idx: Optional[int] = None,
             min_train_samples: int = 1260,
-            severity_targets: dict = None,
         ) -> dict:
             """
             Train crash predictors on one or more horizons.
@@ -112,8 +107,6 @@ if _HAS_LIGHTGBM:
                 targets: Dict of {horizon: binary_series} or single Series
                 train_end_idx: Temporal cutoff index
                 min_train_samples: Minimum observations needed to train
-                severity_targets: Optional dict of {threshold_label: binary_series}
-                    for multi-threshold ensemble (e.g., 10%, 15%, 20% drawdowns)
             """
             if isinstance(targets, pd.Series):
                 targets = {"12m": targets}
@@ -157,10 +150,6 @@ if _HAS_LIGHTGBM:
 
             if not self.models:
                 return {"success": False, "reason": "No horizon trained successfully"}
-
-            # ── Train severity ensemble (10%, 15%, 20% drawdown thresholds) ──
-            if severity_targets:
-                self._train_severity_ensemble(X, severity_targets, train_end_idx, min_train_samples)
 
             # ── Train simple logistic regression on key features ──────────
             # With sparse crash data (~10% base rate, <10 crash events),
@@ -246,13 +235,14 @@ if _HAS_LIGHTGBM:
                     feat_cols = lm["features"]
                     avail = all(f in X_sel.columns for f in feat_cols)
                     if avail:
-                        X_log = lm["scaler"].transform(X_sel[feat_cols].fillna(0))
+                        fill = lm.get("fill_values", 0)
+                        X_log = lm["scaler"].transform(X_sel[feat_cols].fillna(fill))
                         log_probs = lm["model"].predict_proba(X_log)[:, 1]
                         logistic_brier = float(brier_score_loss(y_sel, log_probs))
                 except Exception:
                     logistic_brier = float("inf")
 
-            selected = "lgb" if lgb_brier <= logistic_brier else "logistic"
+            selected = "lgb" if lgb_brier < (logistic_brier - 0.01) else "logistic"
             self.selected_model[horizon] = selected
             self.model_selection_results[horizon] = {
                 "lgb_brier": lgb_brier,
@@ -263,38 +253,6 @@ if _HAS_LIGHTGBM:
                 f"  [ML] Horizon {horizon}: selected {selected} "
                 f"(lgb_brier={lgb_brier:.4f}, logistic_brier={logistic_brier:.4f})"
             )
-
-        def _train_severity_ensemble(
-            self,
-            X: pd.DataFrame,
-            severity_targets: dict,
-            train_end_idx: Optional[int],
-            min_train_samples: int,
-        ):
-            """Train models at multiple drawdown severity levels for ensemble.
-
-            More lenient thresholds (10%, 15%) provide more training examples,
-            capturing early-warning patterns that the strict 20% model misses.
-            The ensemble blends predictions: 0.15 * p_10 + 0.25 * p_15 + 0.60 * p_20
-            """
-            for label, target in severity_targets.items():
-                y = target.iloc[:train_end_idx] if train_end_idx is not None else target.copy()
-                valid = y.notna() & X.iloc[: len(y)].notna().any(axis=1)
-                X_sev = X.iloc[: len(y)][valid]
-                y_sev = y[valid].astype(int)
-
-                if len(X_sev) < min_train_samples or y_sev.nunique() < 2:
-                    continue
-
-                try:
-                    r = self._train_single(X_sev, y_sev, label)
-                    if r["success"]:
-                        # Move from primary models dict to severity dict
-                        self.severity_models[label] = self.models.pop(label)
-                        if label in self.calibrators:
-                            self.severity_calibrators[label] = self.calibrators.pop(label)
-                except Exception:
-                    continue
 
         def _train_single(self, X: pd.DataFrame, y: pd.Series, horizon: str) -> dict:
             """
@@ -504,10 +462,14 @@ if _HAS_LIGHTGBM:
             if len(available_feats) < 2 or len(y_v) < min_train_samples:
                 return
 
-            X_log = X_v[available_feats].fillna(0)
-
             # Simple 80/20 split
-            split = int(len(X_log) * 0.8)
+            split = int(len(X_v) * 0.8)
+
+            # Compute fill values from training data only (not validation).
+            # Fall back to 0 for columns that are entirely NaN in training.
+            train_medians = X_v[available_feats].iloc[:split].median().fillna(0)
+            X_log = X_v[available_feats].fillna(train_medians)
+
             scaler = StandardScaler()
             X_train = scaler.fit_transform(X_log.iloc[:split])
             X_val = scaler.transform(X_log.iloc[split:])
@@ -524,6 +486,7 @@ if _HAS_LIGHTGBM:
                 "model": lr,
                 "scaler": scaler,
                 "features": available_feats,
+                "fill_values": train_medians,
             }
             print(
                 f"  [OK] Logistic crash model ({horizon}): "
@@ -590,7 +553,8 @@ if _HAS_LIGHTGBM:
                 if isinstance(features, pd.DataFrame) and all(
                     f in features.columns for f in feat_cols
                 ):
-                    X_log = lm["scaler"].transform(features[feat_cols].fillna(0))
+                    fill = lm.get("fill_values", 0)
+                    X_log = lm["scaler"].transform(features[feat_cols].fillna(fill))
                     calibrated = lm["model"].predict_proba(X_log)[:, 1]
                 else:
                     # Features not available, fall back to LightGBM anyway
@@ -603,7 +567,9 @@ if _HAS_LIGHTGBM:
                     base = self._train_crash_rate.get(horizon, 0.12)
                     return np.full(len(X), base)
                 if horizon not in self.models:
-                    horizon = list(self.models.keys())[0]
+                    fallback = list(self.models.keys())[0]
+                    print(f"  [WARN] Horizon {horizon} not trained, falling back to {fallback}")
+                    horizon = fallback
 
                 raw = self.models[horizon].predict_proba(X)[:, 1]
 

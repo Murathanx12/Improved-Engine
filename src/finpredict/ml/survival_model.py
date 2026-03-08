@@ -55,6 +55,7 @@ HORIZON_DAYS = {
 try:
     from lifelines import CoxPHFitter
     from sklearn.preprocessing import StandardScaler
+
     _HAS_LIFELINES = True
 except ImportError:
     _HAS_LIFELINES = False
@@ -114,6 +115,7 @@ class CrashSurvivalModel:
         self.is_trained = False
         self._model = None
         self._scaler = None
+        self._fill_values = None
         self._available_features = []
         self._base_rate = config.get("ml", {}).get("crash_base_rate_fallback", 0.12)
 
@@ -145,11 +147,17 @@ class CrashSurvivalModel:
             return {"success": False, "reason": "data required for survival targets"}
 
         if train_end_idx < min_train_samples:
-            return {"success": False, "reason": f"Need {min_train_samples} samples, have {train_end_idx}"}
+            return {
+                "success": False,
+                "reason": f"Need {min_train_samples} samples, have {train_end_idx}",
+            }
 
-        # Build survival targets from price data
+        # Build survival targets from price data — only use data up to
+        # train_end_idx + 252 so forward-looking labels don't peek beyond
+        # the backtest cutoff into the validation/test period.
+        target_data_end = min(train_end_idx + 252, len(data))
         surv = _build_survival_targets(
-            data,
+            data.iloc[:target_data_end],
             max_horizon=252,
             threshold=-config["risk"]["crash_threshold"],
         )
@@ -157,12 +165,16 @@ class CrashSurvivalModel:
         # Select available features
         self._available_features = [f for f in COX_FEATURES if f in features.columns]
         if len(self._available_features) < 3:
-            return {"success": False, "reason": f"Only {len(self._available_features)} features available"}
+            return {
+                "success": False,
+                "reason": f"Only {len(self._available_features)} features available",
+            }
 
-        # Purged train/val split
+        # Only use targets up to train_end_idx - 252 for training:
+        # observations near the cutoff have labels that look beyond it.
         purge_gap = config.get("ml", {}).get("purge_gaps", {}).get("12m", 265)
-        val_start = train_end_idx - purge_gap
-        train_end = val_start - purge_gap
+        train_end = train_end_idx - 252  # purge for forward-looking labels
+        val_start = train_end + purge_gap
         if train_end < min_train_samples:
             train_end = int(train_end_idx * 0.7)
             val_start = train_end + purge_gap
@@ -182,6 +194,9 @@ class CrashSurvivalModel:
                 "success": False,
                 "reason": f"Insufficient data: {len(X_train)} rows, {surv_train['event'].sum():.0f} events",
             }
+
+        # Store training medians for NaN filling at prediction time
+        self._fill_values = X_train.median()
 
         # Scale features (Cox PH is sensitive to feature scales)
         self._scaler = StandardScaler()
@@ -236,12 +251,16 @@ class CrashSurvivalModel:
         }
         if val_concordance is not None:
             result["val_concordance"] = float(val_concordance)
-            print(f"  [COX] Trained: {len(X_train)} samples, "
-                  f"{int(surv_train['event'].sum())} events, "
-                  f"concordance={val_concordance:.3f}")
+            print(
+                f"  [COX] Trained: {len(X_train)} samples, "
+                f"{int(surv_train['event'].sum())} events, "
+                f"concordance={val_concordance:.3f}"
+            )
         else:
-            print(f"  [COX] Trained: {len(X_train)} samples, "
-                  f"{int(surv_train['event'].sum())} events")
+            print(
+                f"  [COX] Trained: {len(X_train)} samples, "
+                f"{int(surv_train['event'].sum())} events"
+            )
 
         return result
 
@@ -269,13 +288,12 @@ class CrashSurvivalModel:
 
         available = [f for f in self._available_features if f in features.columns]
         if len(available) < len(self._available_features):
-            # Fill missing features with 0 (neutral after scaling)
-            X = features.reindex(columns=self._available_features, fill_value=0.0)
+            X = features.reindex(columns=self._available_features)
         else:
             X = features[self._available_features]
 
-        # Handle NaN
-        X = X.fillna(0.0)
+        # Fill NaN with training medians (not zero — zero is a false neutral)
+        X = X.fillna(self._fill_values)
 
         X_scaled = pd.DataFrame(
             self._scaler.transform(X),
@@ -285,11 +303,21 @@ class CrashSurvivalModel:
 
         try:
             surv_func = self._model.predict_survival_function(X_scaled)
-            # surv_func is a DataFrame with time points as index
-            # Find closest time point to our horizon
-            times = surv_func.index
-            closest_idx = np.argmin(np.abs(times - horizon_days))
-            s_t = surv_func.iloc[closest_idx].values
+            # surv_func is a DataFrame with time points as index.
+            # Interpolate to get S(t) at the exact horizon day rather
+            # than snapping to the nearest event time.
+            times = surv_func.index.values.astype(float)
+            if horizon_days <= times[0]:
+                s_t = surv_func.iloc[0].values
+            elif horizon_days >= times[-1]:
+                s_t = surv_func.iloc[-1].values
+            else:
+                # Linear interpolation between bracketing event times
+                right = np.searchsorted(times, horizon_days)
+                left = right - 1
+                t_lo, t_hi = times[left], times[right]
+                frac = (horizon_days - t_lo) / (t_hi - t_lo) if t_hi != t_lo else 0.0
+                s_t = surv_func.iloc[left].values * (1 - frac) + surv_func.iloc[right].values * frac
             crash_prob = 1.0 - s_t
         except Exception:
             crash_prob = np.full(len(X), self._base_rate)

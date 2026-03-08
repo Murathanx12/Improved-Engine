@@ -69,7 +69,7 @@ def main():
         except Exception:
             pass
 
-        np.random.seed(42)
+        np.random.default_rng(42)
         sim_cfg = config["simulation"]
 
         print("=" * 90)

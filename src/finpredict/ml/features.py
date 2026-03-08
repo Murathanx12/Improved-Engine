@@ -14,6 +14,7 @@ FRED macro time series. Features span these categories:
 
 ALL features are strictly backward-looking — no future data leakage.
 """
+
 from typing import Dict
 import numpy as np
 import pandas as pd
@@ -22,6 +23,7 @@ import pandas as pd
 # ═══════════════════════════════════════════════════════════════════════
 # HELPER: Fractional Differentiation (Lopez de Prado, Ch. 5)
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def _frac_diff_ffd(series: pd.Series, d: float = 0.4, threshold: float = 1e-4) -> pd.Series:
     """Fixed-width window fractional differentiation.
@@ -55,8 +57,8 @@ def _frac_diff_ffd(series: pd.Series, d: float = 0.4, threshold: float = 1e-4) -
     vals = series.values.astype(float)
     out = np.full(len(vals), np.nan)
     for i in range(width - 1, len(vals)):
-        if not np.any(np.isnan(vals[i - width + 1: i + 1])):
-            out[i] = np.dot(weights, vals[i - width + 1: i + 1])
+        if not np.any(np.isnan(vals[i - width + 1 : i + 1])):
+            out[i] = np.dot(weights, vals[i - width + 1 : i + 1])
     return pd.Series(out, index=series.index)
 
 
@@ -64,7 +66,10 @@ def _frac_diff_ffd(series: pd.Series, d: float = 0.4, threshold: float = 1e-4) -
 # MAIN FEATURE BUILDER
 # ═══════════════════════════════════════════════════════════════════════
 
-def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None, global_data: dict = None) -> pd.DataFrame:
+
+def build_feature_matrix(
+    data: pd.DataFrame, fred_data: dict = None, global_data: dict = None
+) -> pd.DataFrame:
     """Build 80+ backward-looking features from market data and optional FRED macro.
 
     Args:
@@ -87,23 +92,28 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None, global_data
     # ═══════════════════════════════════════════════════════════════
     # 2. PRICE MOMENTUM (multiple horizons)
     # ═══════════════════════════════════════════════════════════════
-    for days, name in [(5, "1w"), (10, "2w"), (21, "1m"), (42, "2m"),
-                       (63, "3m"), (126, "6m"), (252, "12m")]:
+    for days, name in [
+        (5, "1w"),
+        (10, "2w"),
+        (21, "1m"),
+        (42, "2m"),
+        (63, "3m"),
+        (126, "6m"),
+        (252, "12m"),
+    ]:
         df[f"mom_{name}"] = sp.pct_change(days)
 
     # Distance from 52-week high and low
     high_252 = sp.rolling(252).max()
     low_252 = sp.rolling(252).min()
     df["dist_52w_high"] = (sp - high_252) / high_252  # Always <= 0
-    df["dist_52w_low"] = (sp - low_252) / low_252     # Always >= 0
-
+    df["dist_52w_low"] = (sp - low_252) / low_252  # Always >= 0
 
     # ═══════════════════════════════════════════════════════════════
     # 3. VOLATILITY (realized, ratios, higher moments)
     # ═══════════════════════════════════════════════════════════════
     log_ret = df["log_ret"]
-    for days, name in [(5, "1w"), (10, "2w"), (21, "1m"), (63, "3m"),
-                       (126, "6m"), (252, "12m")]:
+    for days, name in [(5, "1w"), (10, "2w"), (21, "1m"), (63, "3m"), (126, "6m"), (252, "12m")]:
         df[f"vol_{name}"] = log_ret.rolling(days).std()
 
     # Volatility ratios — detect regime shifts
@@ -116,9 +126,7 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None, global_data
 
     # Higher moments
     df["realized_skew"] = log_ret.rolling(63).skew()
-    df["realized_kurt"] = log_ret.rolling(63).apply(
-        lambda x: pd.Series(x).kurtosis(), raw=False
-    )
+    df["realized_kurt"] = log_ret.rolling(63).apply(lambda x: pd.Series(x).kurtosis(), raw=False)
 
     # Worst single day in recent windows
     df["max_daily_loss_21d"] = log_ret.rolling(21).min()
@@ -279,7 +287,6 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None, global_data
         df["sp_nasdaq_corr_63d"] = sp_ret.rolling(63).corr(nasdaq_ret)
 
     if "Russell" in data.columns:
-        data["Russell"].pct_change()
         df["small_large_ratio"] = data["Russell"] / sp
         df["small_large_change_3m"] = df["small_large_ratio"].pct_change(63)
 
@@ -352,9 +359,9 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None, global_data
                     is_monthly = median_gap > pd.Timedelta(days=15)
                 else:
                     is_monthly = False
-                s = s.reindex(df.index)
                 if is_monthly:
-                    s = s.shift(21)  # 21 trading days ≈ 1 month lag
+                    s = s.shift(1)  # Shift by 1 period on monthly index before reindexing
+                s = s.reindex(df.index)
                 s = s.ffill()
                 col = f"fred_{k}"
                 fred_cols[col] = s
@@ -386,6 +393,7 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None, global_data
     if global_data:
         try:
             from finpredict.data.global_crashes import compute_contagion_features
+
             contagion = compute_contagion_features(global_data, df.index)
             if not contagion.empty:
                 df = pd.concat([df, contagion], axis=1)
@@ -437,8 +445,8 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None, global_data
         ted_chg_mean = df["ted_spread_chg_1w"].rolling(252).mean()
         ted_chg_std = df["ted_spread_chg_1w"].rolling(252).std()
         df["ted_spread_velocity_zscore"] = (
-            (df["ted_spread_chg_1w"] - ted_chg_mean) / ted_chg_std.replace(0, np.nan)
-        )
+            df["ted_spread_chg_1w"] - ted_chg_mean
+        ) / ted_chg_std.replace(0, np.nan)
 
     # 10.4 VIX Backwardation Duration & Intensity
     if "vix_backwardation" in df.columns:
@@ -447,9 +455,7 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None, global_data
         bw_groups = not_bw.cumsum()
         df["vix_backwardation_duration"] = vb.groupby(bw_groups).cumsum()
         if "vix_term_structure_ratio" in df.columns:
-            df["vix_backwardation_intensity"] = (
-                df["vix_term_structure_ratio"] - 1.0
-            ).clip(lower=0)
+            df["vix_backwardation_intensity"] = (df["vix_term_structure_ratio"] - 1.0).clip(lower=0)
         df["vix_backwardation_5d_pct"] = vb.rolling(5).mean()
         df["vix_backwardation_21d_pct"] = vb.rolling(21).mean()
 
@@ -517,8 +523,8 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None, global_data
         df["concentration_change_3m"] = df["concentration_top7"].pct_change(63)
         conc_mean = df["concentration_top7"].rolling(252).mean()
         conc_std = df["concentration_top7"].rolling(252).std()
-        df["concentration_zscore"] = (
-            (df["concentration_top7"] - conc_mean) / conc_std.replace(0, np.nan)
+        df["concentration_zscore"] = (df["concentration_top7"] - conc_mean) / conc_std.replace(
+            0, np.nan
         )
     elif "sector_dispersion_63d" in df.columns:
         disp = df["sector_dispersion_63d"]
@@ -590,30 +596,29 @@ def build_feature_matrix(data: pd.DataFrame, fred_data: dict = None, global_data
         df["spx_tlt_corr_positive"] = (df["spx_tlt_corr_30d"] > 0).astype(float)
         corr_mean = df["spx_tlt_corr_63d"].rolling(252).mean()
         corr_std = df["spx_tlt_corr_63d"].rolling(252).std()
-        df["spx_tlt_corr_zscore"] = (
-            (df["spx_tlt_corr_63d"] - corr_mean) / corr_std.replace(0, np.nan)
+        df["spx_tlt_corr_zscore"] = (df["spx_tlt_corr_63d"] - corr_mean) / corr_std.replace(
+            0, np.nan
         )
 
     # 11.8 Fractionally Differentiated Price (Lopez de Prado)
     df["sp500_frac_diff"] = _frac_diff_ffd(np.log(sp), d=0.4)
     fd_mean = df["sp500_frac_diff"].rolling(252).mean()
     fd_std = df["sp500_frac_diff"].rolling(252).std()
-    df["sp500_frac_diff_zscore"] = (
-        (df["sp500_frac_diff"] - fd_mean) / fd_std.replace(0, np.nan)
-    )
+    df["sp500_frac_diff_zscore"] = (df["sp500_frac_diff"] - fd_mean) / fd_std.replace(0, np.nan)
 
     # ═══════════════════════════════════════════════════════════════
     # 12. FINAL CLEANUP
     # ═══════════════════════════════════════════════════════════════
     # Drop the raw price column (SP500 itself is not a feature)
     # Keep only derived features
-    df = df.replace([np.inf, -np.inf], np.nan).ffill()
+    df = df.replace([np.inf, -np.inf], np.nan).ffill(limit=5)
     return df
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # TARGET BUILDERS
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def _forward_return(series: pd.Series, days: int) -> pd.Series:
     return series.shift(-days) / series - 1.0

@@ -52,8 +52,8 @@ class MetaStacker:
 
     def __init__(self, random_state: int = 42):
         self.random_state = random_state
-        self.stackers = {}     # {horizon: LogisticRegression}
-        self.scalers = {}      # {horizon: StandardScaler}
+        self.stackers = {}  # {horizon: LogisticRegression}
+        self.scalers = {}  # {horizon: StandardScaler}
         self.is_trained = False
         self._available_models = []
         self._model_weights = {}
@@ -77,12 +77,14 @@ class MetaStacker:
         """
         # Determine which models are available (have predictions)
         self._available_models = [
-            m for m in self.MODEL_NAMES
-            if m in model_predictions and model_predictions[m]
+            m for m in self.MODEL_NAMES if m in model_predictions and model_predictions[m]
         ]
 
         if len(self._available_models) < 2:
-            return {"success": False, "reason": f"Need >=2 models, have {len(self._available_models)}"}
+            return {
+                "success": False,
+                "reason": f"Need >=2 models, have {len(self._available_models)}",
+            }
 
         # Determine available horizons
         sample_model = model_predictions[self._available_models[0]]
@@ -91,8 +93,11 @@ class MetaStacker:
         results = {}
         for horizon in horizons:
             r = self._train_horizon(
-                model_predictions, regime_probs, targets.get(horizon),
-                horizon, train_end_idx,
+                model_predictions,
+                regime_probs,
+                targets.get(horizon),
+                horizon,
+                train_end_idx,
             )
             results[horizon] = r
 
@@ -143,7 +148,7 @@ class MetaStacker:
                 preds = model_predictions[model_name].get(horizon)
                 if preds is not None and regime_probs.shape[1] >= 2:
                     # Interaction with bear probability
-                    meta_features.append(np.asarray(preds) * regime_probs[:len(preds), 1])
+                    meta_features.append(np.asarray(preds) * regime_probs[: len(preds), 1])
                     feature_names.append(f"{model_name}_x_bear")
 
         # Stack into matrix
@@ -157,7 +162,10 @@ class MetaStacker:
         y = y[valid]
 
         if len(X) < 50 or y.sum() < 2:
-            return {"success": False, "reason": f"Insufficient data: {len(X)} rows, {y.sum()} positives"}
+            return {
+                "success": False,
+                "reason": f"Insufficient data: {len(X)} rows, {y.sum()} positives",
+            }
 
         # Train/val split
         if train_end_idx is not None:
@@ -170,9 +178,17 @@ class MetaStacker:
         y_train, y_val = y[:split], y[split:n]
 
         if y_train.sum() < 2 or len(np.unique(y_val)) < 2:
-            # Use all data for training (no validation metrics)
-            X_train, y_train = X[:n], y[:n]
-            X_val, y_val = X_train, y_train
+            # Insufficient positive examples for proper train/val split.
+            # Use all data for training but use a smaller held-out slice
+            # to avoid evaluating on training data (which inflates metrics).
+            fallback_split = max(int(n * 0.9), n - 10)
+            X_train, y_train = X[:fallback_split], y[:fallback_split]
+            X_val, y_val = X[fallback_split:n], y[fallback_split:n]
+            if y_train.sum() < 2:
+                return {
+                    "success": False,
+                    "reason": "Insufficient positive examples for meta-stacker",
+                }
 
         # Standardize
         scaler = StandardScaler()
@@ -182,9 +198,9 @@ class MetaStacker:
         # Logistic regression with L2 regularization
         lr = LogisticRegression(
             C=0.5,
-            solver='lbfgs',
+            solver="lbfgs",
             max_iter=1000,
-            class_weight='balanced',
+            class_weight="balanced",
             random_state=self.random_state,
         )
         lr.fit(X_train_s, y_train)
@@ -200,9 +216,11 @@ class MetaStacker:
         coefs = dict(zip(feature_names, lr.coef_[0]))
         self._model_weights[horizon] = coefs
 
-        print(f"  [META] Horizon {horizon}: Brier={val_brier:.4f}, "
-              f"models={self._available_models}, "
-              f"features={len(feature_names)}")
+        print(
+            f"  [META] Horizon {horizon}: Brier={val_brier:.4f}, "
+            f"models={self._available_models}, "
+            f"features={len(feature_names)}"
+        )
 
         return {
             "success": True,
@@ -236,14 +254,12 @@ class MetaStacker:
 
         # Determine which models from training are actually available now
         available_at_inference = [
-            m for m in self._available_models
-            if model_predictions.get(m) is not None
+            m for m in self._available_models if model_predictions.get(m) is not None
         ]
 
         # Collect only non-None predictions for simple averaging
         available_preds = [
-            (k, v) for k, v in model_predictions.items()
-            if k in self.MODEL_NAMES and v is not None
+            (k, v) for k, v in model_predictions.items() if k in self.MODEL_NAMES and v is not None
         ]
 
         if not available_preds:
