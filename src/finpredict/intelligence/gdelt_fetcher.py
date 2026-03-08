@@ -20,13 +20,12 @@ Historical note on signal value:
     - Before Ukraine: Geopolitical event counts spiked months before invasion
 """
 
-import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from typing import Optional
 
 try:
     import requests
+
     _HAS_REQUESTS = True
 except ImportError:
     _HAS_REQUESTS = False

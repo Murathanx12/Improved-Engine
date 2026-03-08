@@ -14,7 +14,7 @@ Usage:
     scenarios = build_scenarios(regime, risk_score, vix_level, yield_curve)
 """
 
-from finpredict.config import config, get_scenario_configs
+from finpredict.config import get_scenario_configs
 
 
 def build_scenarios(
@@ -53,7 +53,12 @@ def build_scenarios(
 
     # Dynamic probability adjustment
     scenarios = _adjust_probabilities(
-        scenarios, regime, risk_score, vix_level, yield_curve, recession_prob,
+        scenarios,
+        regime,
+        risk_score,
+        vix_level,
+        yield_curve,
+        recession_prob,
     )
 
     return scenarios
@@ -82,7 +87,7 @@ def _adjust_probabilities(
     # Group by category
     bullish = [k for k, v in s.items() if v.get("category") == "bullish"]
     bearish = [k for k, v in s.items() if v.get("category") == "bearish"]
-    neutral = [k for k, v in s.items() if v.get("category") == "neutral"]
+    [k for k, v in s.items() if v.get("category") == "neutral"]
 
     # ── FRED recession probability (strongest signal) ────────────────────
     if recession_prob is not None and recession_prob > 0.30:
@@ -94,17 +99,17 @@ def _adjust_probabilities(
             s[name]["probability"] *= max(0.3, 1.0 - (recession_prob - 0.30))
 
     # Risk score adjustments
-    if risk_score > 2.0:      # High stress
+    if risk_score > 2.0:  # High stress
         for name in bearish:
             s[name]["probability"] *= 1.4
         for name in bullish:
             s[name]["probability"] *= 0.6
-    elif risk_score > 1.0:    # Elevated stress
+    elif risk_score > 1.0:  # Elevated stress
         for name in bearish:
             s[name]["probability"] *= 1.2
         for name in bullish:
             s[name]["probability"] *= 0.8
-    elif risk_score < -0.5:   # Low stress
+    elif risk_score < -0.5:  # Low stress
         for name in bullish:
             s[name]["probability"] *= 1.3
         for name in bearish:

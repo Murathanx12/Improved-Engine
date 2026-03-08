@@ -25,7 +25,6 @@ USAGE:
 
 import numpy as np
 import pandas as pd
-from typing import Optional
 
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
@@ -154,8 +153,7 @@ class BayesianChangepoint:
     Uses a simple Gaussian model with known variance for speed.
     """
 
-    def __init__(self, hazard_rate: float = 1/252, mu_prior: float = 0.0,
-                 var_prior: float = 1.0):
+    def __init__(self, hazard_rate: float = 1 / 252, mu_prior: float = 0.0, var_prior: float = 1.0):
         """
         Args:
             hazard_rate: Prior probability of changepoint at each step.
@@ -183,10 +181,13 @@ class BayesianChangepoint:
         x = returns.dropna().values[-window:] if window else returns.dropna().values
         n = len(x)
         if n < 10:
-            return pd.DataFrame({
-                "changepoint_prob": np.zeros(len(returns)),
-                "regime_age": np.full(len(returns), float(len(returns))),
-            }, index=returns.index)
+            return pd.DataFrame(
+                {
+                    "changepoint_prob": np.zeros(len(returns)),
+                    "regime_age": np.full(len(returns), float(len(returns))),
+                },
+                index=returns.index,
+            )
 
         # Run length probabilities: R(t) = P(run_length = r at time t)
         # R is (n+1,) at each step; we track the growth probability
@@ -195,8 +196,8 @@ class BayesianChangepoint:
         R[0, 0] = 1.0
 
         # Sufficient statistics for online Gaussian
-        mu_params = np.full(max_run, self.mu_prior)
-        var_params = np.full(max_run, self.var_prior)
+        np.full(max_run, self.mu_prior)
+        np.full(max_run, self.var_prior)
         counts = np.zeros(max_run)
         sums = np.zeros(max_run)
         sum_sq = np.zeros(max_run)
@@ -219,44 +220,48 @@ class BayesianChangepoint:
                     predprobs[r] = _gaussian_pdf(x[t], mean, var)
 
             # Growth probabilities
-            R[t + 1, 1:t + 2] = R[t, :t + 1] * predprobs * (1 - h)
+            R[t + 1, 1 : t + 2] = R[t, : t + 1] * predprobs * (1 - h)
             # Changepoint probability
-            R[t + 1, 0] = np.sum(R[t, :t + 1] * predprobs * h)
+            R[t + 1, 0] = np.sum(R[t, : t + 1] * predprobs * h)
 
             # Normalize
-            evidence = R[t + 1, :t + 2].sum()
+            evidence = R[t + 1, : t + 2].sum()
             if evidence > 0:
-                R[t + 1, :t + 2] /= evidence
+                R[t + 1, : t + 2] /= evidence
 
             changepoint_probs[t] = float(R[t + 1, 0])
 
             # Expected run length (regime age)
             run_lengths = np.arange(t + 2)
-            regime_ages[t] = float(np.sum(run_lengths * R[t + 1, :t + 2]))
+            regime_ages[t] = float(np.sum(run_lengths * R[t + 1, : t + 2]))
 
             # Update sufficient statistics
-            new_counts = counts[:t + 1] + 1
-            new_sums = sums[:t + 1] + x[t]
-            new_sum_sq = sum_sq[:t + 1] + x[t]**2
+            new_counts = counts[: t + 1] + 1
+            new_sums = sums[: t + 1] + x[t]
+            new_sum_sq = sum_sq[: t + 1] + x[t] ** 2
 
-            counts[1:t + 2] = new_counts
-            sums[1:t + 2] = new_sums
-            sum_sq[1:t + 2] = new_sum_sq
+            counts[1 : t + 2] = new_counts
+            sums[1 : t + 2] = new_sums
+            sum_sq[1 : t + 2] = new_sum_sq
             counts[0] = 0
             sums[0] = 0
             sum_sq[0] = 0
 
         # Align with original index
         result_index = returns.dropna().index[-n:] if window else returns.dropna().index
-        result = pd.DataFrame({
-            "changepoint_prob": changepoint_probs,
-            "regime_age": regime_ages,
-        }, index=result_index)
+        result = pd.DataFrame(
+            {
+                "changepoint_prob": changepoint_probs,
+                "regime_age": regime_ages,
+            },
+            index=result_index,
+        )
 
         return result.reindex(returns.index).fillna(0)
 
-    def recent_changepoint(self, returns: pd.Series, window: int = 60,
-                           threshold: float = 0.30) -> dict:
+    def recent_changepoint(
+        self, returns: pd.Series, window: int = 60, threshold: float = 0.30
+    ) -> dict:
         """Check if a recent changepoint was detected.
 
         Returns:
@@ -280,7 +285,7 @@ class BayesianChangepoint:
 
 def _gaussian_pdf(x: float, mu: float, var: float) -> float:
     """Gaussian probability density."""
-    return np.exp(-0.5 * (x - mu)**2 / var) / np.sqrt(2 * np.pi * var)
+    return np.exp(-0.5 * (x - mu) ** 2 / var) / np.sqrt(2 * np.pi * var)
 
 
 __all__ = ["AnomalyDetector", "BayesianChangepoint"]

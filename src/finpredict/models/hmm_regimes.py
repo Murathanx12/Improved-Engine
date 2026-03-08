@@ -22,21 +22,20 @@ import numpy as np
 import pandas as pd
 from typing import NamedTuple
 
-from finpredict.config import config
-
 
 class HMMResult(NamedTuple):
     """Results from fitting an HMM regime model."""
-    model: object                    # Fitted GaussianHMM
-    regime_labels: pd.Series         # Regime name per day
-    regime_probs: np.ndarray         # Current [bull, bear, crisis] probabilities
-    current_regime: str              # Current regime name
-    transition_matrix: np.ndarray    # State transition probabilities
-    state_means: np.ndarray          # Mean of each state
-    state_vols: np.ndarray           # Volatility of each state
+
+    model: object  # Fitted GaussianHMM
+    regime_labels: pd.Series  # Regime name per day
+    regime_probs: np.ndarray  # Current [bull, bear, crisis] probabilities
+    current_regime: str  # Current regime name
+    transition_matrix: np.ndarray  # State transition probabilities
+    state_means: np.ndarray  # Mean of each state
+    state_vols: np.ndarray  # Volatility of each state
     success: bool
     feature_mean: np.ndarray = None  # Standardization mean for scoring new data
-    feature_std: np.ndarray = None   # Standardization std for scoring new data
+    feature_std: np.ndarray = None  # Standardization std for scoring new data
 
 
 def fit_hmm_regimes(
@@ -139,7 +138,7 @@ def fit_hmm_regimes(
         mask = states == s
         if mask.sum() > 0:
             state_mean_returns.append(float(X[mask, 0].mean()))  # Annualized return
-            state_mean_vols.append(float(X[mask, 1].mean()))     # Realized vol
+            state_mean_vols.append(float(X[mask, 1].mean()))  # Realized vol
         else:
             state_mean_returns.append(0)
             state_mean_vols.append(0.2)
@@ -171,20 +170,26 @@ def fit_hmm_regimes(
     current_probs_raw = probs[-1]
     current_probs = np.zeros(n_states)
     for raw_idx, name in label_map.items():
-        ordered_idx = ["Bull", "Bear", "Crisis"].index(name) if name in ["Bull", "Bear", "Crisis"] else raw_idx
+        ordered_idx = (
+            ["Bull", "Bear", "Crisis"].index(name)
+            if name in ["Bull", "Bear", "Crisis"]
+            else raw_idx
+        )
         if ordered_idx < n_states:
             current_probs[ordered_idx] = current_probs_raw[raw_idx]
 
     current = label_map[states[-1]]
 
-    print(f"  [HMM] Regime distribution:")
+    print("  [HMM] Regime distribution:")
     for s_idx in sorted_indices:
         name = label_map[s_idx]
         count = (np.array(states) == s_idx).sum()
         pct = count / len(states) * 100
-        print(f"    {name}: {pct:.0f}% of days (mean ret={state_mean_returns[s_idx]*100:.1f}%, "f"vol={state_mean_vols[s_idx]*100:.1f}%)")
-    print(f"  [HMM] Current regime: {current} "
-          f"(P={current_probs_raw[states[-1]]:.0%})")
+        print(
+            f"    {name}: {pct:.0f}% of days (mean ret={state_mean_returns[s_idx]*100:.1f}%, "
+            f"vol={state_mean_vols[s_idx]*100:.1f}%)"
+        )
+    print(f"  [HMM] Current regime: {current} " f"(P={current_probs_raw[states[-1]]:.0%})")
     print(f"  [HMM] Log-likelihood: {best_score:.0f}\n")
 
     return HMMResult(

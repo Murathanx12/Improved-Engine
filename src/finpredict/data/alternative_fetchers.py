@@ -49,6 +49,7 @@ def fetch_put_call_ratio() -> Optional[pd.Series]:
     """
     try:
         import yfinance as yf
+
         spy = yf.Ticker("SPY")
         expirations = spy.options
         if not expirations or len(expirations) < 2:
@@ -66,8 +67,7 @@ def fetch_put_call_ratio() -> Optional[pd.Series]:
             return None
 
         ratio = total_put_oi / total_call_oi
-        return pd.Series([ratio], index=[pd.Timestamp.now().normalize()],
-                         name="put_call_ratio")
+        return pd.Series([ratio], index=[pd.Timestamp.now().normalize()], name="put_call_ratio")
     except Exception as e:
         print(f"  [WARN] Put/call ratio fetch failed: {e}")
         return None
@@ -82,11 +82,14 @@ def fetch_aaii_sentiment() -> Optional[pd.DataFrame]:
     url = "https://www.aaii.com/files/surveys/sentiment.xls"
     try:
         import requests
-        resp = requests.get(url, timeout=15, headers={
-            "User-Agent": "Mozilla/5.0 (finpredict research engine)"
-        })
+
+        resp = requests.get(
+            url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (finpredict research engine)"}
+        )
         if resp.status_code != 200:
-            print(f"  [WARN] AAII data unavailable (HTTP {resp.status_code}) — skipping sentiment feature")
+            print(
+                f"  [WARN] AAII data unavailable (HTTP {resp.status_code}) — skipping sentiment feature"
+            )
             return None
 
         df = pd.read_excel(io.BytesIO(resp.content), sheet_name=0)
@@ -113,12 +116,16 @@ def fetch_aaii_sentiment() -> Optional[pd.DataFrame]:
             print("  [WARN] AAII data format changed — skipping sentiment feature")
             return None
 
-        result = pd.DataFrame({
-            "date": pd.to_datetime(df[date_col], errors="coerce"),
-            "bullish": pd.to_numeric(df[bull_col], errors="coerce"),
-            "bearish": pd.to_numeric(df[bear_col], errors="coerce"),
-            "neutral": pd.to_numeric(df.get(neutral_col, 0), errors="coerce") if neutral_col else 0,
-        }).dropna(subset=["date", "bullish", "bearish"])
+        result = pd.DataFrame(
+            {
+                "date": pd.to_datetime(df[date_col], errors="coerce"),
+                "bullish": pd.to_numeric(df[bull_col], errors="coerce"),
+                "bearish": pd.to_numeric(df[bear_col], errors="coerce"),
+                "neutral": pd.to_numeric(df.get(neutral_col, 0), errors="coerce")
+                if neutral_col
+                else 0,
+            }
+        ).dropna(subset=["date", "bullish", "bearish"])
 
         result = result.set_index("date").sort_index()
         print(f"  [OK] AAII sentiment: {len(result)} weeks loaded")
@@ -140,10 +147,11 @@ def fetch_naaim_exposure() -> Optional[pd.Series]:
     """
     try:
         import requests
+
         url = "https://www.naaim.org/programs/naaim-exposure-index/"
-        resp = requests.get(url, timeout=15, headers={
-            "User-Agent": "Mozilla/5.0 (finpredict research engine)"
-        })
+        resp = requests.get(
+            url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (finpredict research engine)"}
+        )
         if resp.status_code != 200:
             print(f"  [WARN] NAAIM data unavailable (HTTP {resp.status_code}) — skipping")
             return None
@@ -195,6 +203,7 @@ def fetch_imf_gdp_forecast(country: str = "USA") -> Optional[dict]:
     """
     try:
         import requests
+
         url = f"https://www.imf.org/external/datamapper/api/v1/NGDP_RPCH/@WEO/{country}"
         resp = requests.get(url, timeout=15)
         if resp.status_code != 200:
@@ -236,7 +245,7 @@ def fetch_fed_funds_futures() -> Optional[dict]:
     """
     try:
         import yfinance as yf
-        from datetime import datetime, timedelta
+        
 
         # Current effective fed funds rate proxy from FRED
         # Use 3-month T-Bill as fed funds proxy (publicly available)
@@ -250,7 +259,7 @@ def fetch_fed_funds_futures() -> Optional[dict]:
             current_rate = float(irx["Close"].dropna().iloc[-1]) / 100
 
         # Fetch 2-year Treasury for longer-term rate expectations
-        tnx = yf.download("^TNX", period="5d", progress=False)
+        yf.download("^TNX", period="5d", progress=False)
         twoyr = yf.download("2YY=F", period="5d", progress=False)
 
         implied_3m = current_rate  # Best available free proxy
@@ -280,8 +289,10 @@ def fetch_fed_funds_futures() -> Optional[dict]:
             "rate_cut_probability": float(np.clip(cut_prob, 0.05, 0.95)),
             "direction": direction,
         }
-        print(f"  [OK] Fed Futures: current={current_rate:.2%}, "
-              f"3m_implied={implied_3m:.2%}, direction={direction}")
+        print(
+            f"  [OK] Fed Futures: current={current_rate:.2%}, "
+            f"3m_implied={implied_3m:.2%}, direction={direction}"
+        )
         return result
 
     except ImportError:

@@ -21,14 +21,14 @@ WHAT'S CHANGED:
 
 HOW IT WORKS:
     Uses a multi-factor model where each factor is computed from data:
-    
-    Expected Sector Return = 
+
+    Expected Sector Return =
         Risk-Free Rate
         + Beta × (ML Market Return - Risk-Free Rate)     ← systematic risk
         + Momentum Factor                                ← trend continuation (short-term)
         + Mean Reversion Factor                          ← valuation gravity (long-term)
         + Sector Volatility Adjustment                   ← risk premium
-    
+
     The beta is rolling 2-year, not static. Momentum captures recent
     relative performance. Mean reversion penalizes sectors that have
     risen much faster than the market over 5 years.
@@ -74,23 +74,25 @@ def analyze_sectors(
 
     sp_returns = data["SP500"].pct_change().dropna()
     sp_price = data["SP500"]
-    sim_cfg = config["simulation"]
+    config["simulation"]
 
     # Market expected return (from ML or fallback)
     if ml_predicted_return is not None:
         market_annual_return = ml_predicted_return
     else:
         from finpredict.config import get_institutional_return
+
         market_annual_return = get_institutional_return()
 
     results = {}
+    sector_factors = {}
     for name, series in sector_data.items():
         series = series.dropna()
         if len(series) < 504:
             continue
 
         returns = series.pct_change().dropna()
-        log_returns = np.log(1 + returns.clip(-0.5, 5.0))
+        np.log(1 + returns.clip(-0.5, 5.0))
         current = float(series.iloc[-1])
 
         # ═══════════════════════════════════════════════════════════
@@ -141,8 +143,8 @@ def analyze_sectors(
         # ═══════════════════════════════════════════════════════════
         # Sectors that have massively outperformed tend to revert
         if len(series) > 1260:  # 5 years
-            annualized_5y = (current / float(series.iloc[-1260])) ** (1/5) - 1
-            market_5y = (float(sp_price.iloc[-1]) / float(sp_price.iloc[-1260])) ** (1/5) - 1
+            annualized_5y = (current / float(series.iloc[-1260])) ** (1 / 5) - 1
+            market_5y = (float(sp_price.iloc[-1]) / float(sp_price.iloc[-1260])) ** (1 / 5) - 1
             excess_5y = annualized_5y - market_5y
 
             # Mean reversion: penalize/boost based on 5-year excess
@@ -170,32 +172,65 @@ def analyze_sectors(
         capm_return = rf + beta * (market_annual_return - rf)
 
         # Total expected return with all factors
-        expected_annual = (
-            capm_return
-            + momentum_alpha
-            + mr_factor
-            + vol_adj
-        )
+        expected_annual = capm_return + momentum_alpha + mr_factor + vol_adj
 
         # Sanity bounds (learned from historical range of sector returns)
         expected_annual = np.clip(expected_annual, -0.30, 0.50)
 
-        # Convert to total 5-year (or whatever forecast_days)
-        years = forecast_days / 252
+        # Store intermediate factors for normalization before MC
+        sector_factors[name] = {
+            "expected_annual": expected_annual,
+            "sigma": sigma,
+            "beta": beta,
+            "rel_strength_6m": rel_strength_6m,
+            "rel_strength_12m": rel_strength_12m,
+            "momentum_alpha": momentum_alpha,
+            "mr_factor": mr_factor,
+            "vol_adj": vol_adj,
+            "current_price": current,
+        }
+
+    # ── Normalize expected returns BEFORE MC ──────────────────────
+    # Ensures cap-weighted sector returns ≈ index return, and MC
+    # paths are simulated with the normalized drift.
+    if sector_factors:
+        default_w = 1.0 / max(len(sector_factors), 1)
+        total_w = sum(_SECTOR_WEIGHTS.get(s, default_w) for s in sector_factors)
+        if total_w > 0:
+            weighted_avg = (
+                sum(
+                    _SECTOR_WEIGHTS.get(s, default_w) * f["expected_annual"]
+                    for s, f in sector_factors.items()
+                )
+                / total_w
+            )
+            gap = weighted_avg - market_annual_return
+            if not np.isnan(gap):
+                for f in sector_factors.values():
+                    f["expected_annual"] -= gap
+
+    # ── Pass 2: Run MC with normalized drift ──────────────────────
+    years = forecast_days / 252
+    n_sims = 2000
+    base_scenario = {"drift_adj": 0, "vol_mult": 1.0, "crash_mult": 1.0}
+    crash_freq = 1.0 / 9.0  # Historical
+
+    for name, f in sector_factors.items():
+        expected_annual = f["expected_annual"]
+        sigma = f["sigma"]
+        current = f["current_price"]
         expected_total = (1 + expected_annual) ** years - 1
 
-        # ═══════════════════════════════════════════════════════════
-        # SIMULATION: Sector-specific Monte Carlo
-        # ═══════════════════════════════════════════════════════════
-        n_sims = 500  # Fewer sims per sector for speed
         sector_mu = np.log(1 + expected_annual)
-        base_scenario = {"drift_adj": 0, "vol_mult": 1.0, "crash_mult": 1.0}
-
-        crash_freq = 1.0 / 9.0  # Historical
-
         paths = simulate_paths(
-            current, sector_mu, sigma, forecast_days, n_sims,
-            crash_freq, 0.0, base_scenario,
+            current,
+            sector_mu,
+            sigma,
+            forecast_days,
+            n_sims,
+            crash_freq,
+            0.0,
+            base_scenario,
             ml_crash_prob=ml_crash_prob,
             ml_predicted_return=expected_annual,
             garch_vol=sigma,
@@ -213,42 +248,46 @@ def analyze_sectors(
             "expected_total": expected_total * 100,
             "sim_total_return": sim_total_return * 100,
             "expected_annual": expected_annual * 100,
-            "beta": beta,
+            "beta": f["beta"],
             "sigma": sigma,
-            "momentum_6m": rel_strength_6m * 100,
-            "momentum_12m": rel_strength_12m * 100,
-            "momentum_alpha": momentum_alpha * 100,
-            "mean_reversion": mr_factor * 100,
-            "vol_adj": vol_adj * 100,
+            "momentum_6m": f["rel_strength_6m"] * 100,
+            "momentum_12m": f["rel_strength_12m"] * 100,
+            "momentum_alpha": f["momentum_alpha"] * 100,
+            "mean_reversion": f["mr_factor"] * 100,
+            "vol_adj": f["vol_adj"] * 100,
             "crash_prob": crash_prob * 100,
             "sim_p10": float(np.percentile(final, 10)),
             "sim_p90": float(np.percentile(final, 90)),
             "current_price": current,
         }
 
-        print(f"  [OK] {name}: {sim_total_return*100:+.1f}% expected "
-              f"(β={beta:.2f}, mom={rel_strength_6m*100:+.1f}%, σ={sigma*100:.0f}%)")
+        print(
+            f"  [OK] {name}: {sim_total_return*100:+.1f}% expected "
+            f"(β={f['beta']:.2f}, mom={f['rel_strength_6m']*100:+.1f}%, σ={sigma*100:.0f}%)"
+        )
 
-    # ── Normalize so cap-weighted sector returns ≈ index return ────
-    # Without this, all sectors can simultaneously beat the index,
-    # which violates basic arithmetic (the index IS the weighted avg).
     if results:
-        years = forecast_days / 252
-        index_total = (1 + market_annual_return) ** years - 1
-        _normalize_to_index(results, index_total * 100)
-        print(f"  [NORM] Sector returns normalized to index "
-              f"({index_total*100:.1f}% total)")
+        print(
+            f"  [NORM] Sector returns normalized to index "
+            f"({market_annual_return*100:.1f}% annual)"
+        )
 
     return results
 
 
 # Approximate S&P 500 sector weights (names match engine_config.yaml)
 _SECTOR_WEIGHTS = {
-    'Technology': 0.32, 'Healthcare': 0.12, 'Financials': 0.13,
-    'Consumer Disc.': 0.10, 'Industrials': 0.09,
-    'Communications': 0.09, 'Consumer Staples': 0.06,
-    'Energy': 0.03, 'Utilities': 0.02, 'Real Estate': 0.02,
-    'Materials': 0.02,
+    "Technology": 0.32,
+    "Healthcare": 0.12,
+    "Financials": 0.13,
+    "Consumer Disc.": 0.10,
+    "Industrials": 0.09,
+    "Communications": 0.09,
+    "Consumer Staples": 0.06,
+    "Energy": 0.03,
+    "Utilities": 0.02,
+    "Real Estate": 0.02,
+    "Materials": 0.02,
 }
 
 
@@ -263,15 +302,18 @@ def _normalize_to_index(sector_results: dict, index_return_pct: float):
     if total_w == 0:
         return
 
-    weighted_avg = sum(
-        _SECTOR_WEIGHTS.get(s, default_w) * r['sim_total_return']
-        for s, r in sector_results.items()
-    ) / total_w
+    weighted_avg = (
+        sum(
+            _SECTOR_WEIGHTS.get(s, default_w) * r["sim_total_return"]
+            for s, r in sector_results.items()
+        )
+        / total_w
+    )
 
     gap = weighted_avg - index_return_pct
     if np.isnan(weighted_avg) or np.isnan(gap):
         print("  [WARN] NaN in sector normalization; skipping")
         return
     for r in sector_results.values():
-        r['sim_total_return'] -= gap
-        r['expected_total'] -= gap
+        r["sim_total_return"] -= gap
+        r["expected_total"] -= gap

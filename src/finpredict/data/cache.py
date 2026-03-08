@@ -12,10 +12,8 @@ Usage:
     data, sector_data = cached_fetch_all_data(force_refresh=True)  # Force re-fetch
 """
 
-import os
 import time
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 

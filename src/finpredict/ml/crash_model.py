@@ -64,27 +64,32 @@ if _HAS_LIGHTGBM:
         # Key features for the simple logistic regression model.
         # These are robust macro/market indicators with established crash-leading properties.
         LOGISTIC_FEATURES = [
-            "vix_zscore",           # VIX z-score (vol regime)
-            "yield_curve_10y3m",    # Yield curve (10Y-3M, inversion signal)
-            "credit_spread_chg_3m", # HY OAS 3-month change (credit stress)
-            "sp500_12m_return",     # 12-month momentum (mean-reversion signal)
-            "vol_ratio_1m_12m",     # Short/long vol ratio (vol clustering)
+            "vix_zscore",  # VIX z-score (vol regime)
+            "term_spread",  # Yield curve 10Y-3M (inversion signal)
+            "credit_spread_proxy",  # HYG/LQD ratio change (credit stress)
+            "mom_12m",  # 12-month momentum (mean-reversion signal)
+            "vol_ratio_1m_12m",  # Short/long vol ratio (vol clustering)
+            "mom_6m",  # 6-month momentum (shorter-term signal)
+            "erp",  # Equity risk premium (valuation)
+            "sma_200d_dev",  # Distance from 200d SMA (trend)
+            "dist_52w_high",  # Distance from 52-week high (drawdown)
+            "vol_1m",  # 1-month realized volatility
         ]
 
-        def __init__(self, n_estimators: int = 800, random_state: int = 42):
+        def __init__(self, n_estimators: int = 300, random_state: int = 42):
             self.n_estimators = n_estimators
             self.random_state = random_state
-            self.models = {}                 # {horizon: lgb model}
-            self.calibrators = {}            # {horizon: Platt scaler}
-            self.severity_models = {}        # {severity: lgb model} for analysis
-            self.severity_calibrators = {}   # {severity: Platt scaler}
-            self.logistic_models = {}        # {horizon: LogisticRegression}
+            self.models = {}  # {horizon: lgb model}
+            self.calibrators = {}  # {horizon: Platt scaler}
+            self.severity_models = {}  # {severity: lgb model} for analysis
+            self.severity_calibrators = {}  # {severity: Platt scaler}
+            self.logistic_models = {}  # {horizon: LogisticRegression}
             self.feature_names = None
             self.feature_importances_ = None
             self.is_trained = False
-            self._train_crash_rate = {}      # base rate per horizon for fallback
-            self._lgb_brier = {}             # {horizon: brier_score} for model selection
-            self.selected_model = {}         # {horizon: "lgb" | "logistic"}
+            self._train_crash_rate = {}  # base rate per horizon for fallback
+            self._lgb_brier = {}  # {horizon: brier_score} for model selection
+            self.selected_model = {}  # {horizon: "lgb" | "logistic"}
             self.model_selection_results = {}  # {horizon: {lgb_brier, logistic_brier, selected}}
 
         def train(
@@ -173,7 +178,10 @@ if _HAS_LIGHTGBM:
             # reporting optimistically biased metrics on the same data.
             for horizon in list(self.models.keys()):
                 self._select_model_for_horizon(
-                    X, target_slices.get(horizon), horizon, train_end_idx,
+                    X,
+                    target_slices.get(horizon),
+                    horizon,
+                    train_end_idx,
                 )
 
             primary_result = results.get("12m", list(results.values())[0])
@@ -196,8 +204,8 @@ if _HAS_LIGHTGBM:
                 return
 
             y = target.iloc[:train_end_idx] if train_end_idx is not None else target.copy()
-            valid = y.notna() & X.iloc[:len(y)].notna().any(axis=1)
-            X_v = X.iloc[:len(y)][valid]
+            valid = y.notna() & X.iloc[: len(y)].notna().any(axis=1)
+            X_v = X.iloc[: len(y)][valid]
             y_v = y[valid].astype(int)
 
             n = len(X_v)
@@ -221,7 +229,9 @@ if _HAS_LIGHTGBM:
                 try:
                     lgb_raw = self.models[horizon].predict_proba(X_sel[self.feature_names])[:, 1]
                     if horizon in self.calibrators:
-                        lgb_cal = self.calibrators[horizon].predict_proba(lgb_raw.reshape(-1, 1))[:, 1]
+                        lgb_cal = self.calibrators[horizon].predict_proba(lgb_raw.reshape(-1, 1))[
+                            :, 1
+                        ]
                     else:
                         lgb_cal = lgb_raw
                     lgb_brier = float(brier_score_loss(y_sel, lgb_cal))
@@ -249,8 +259,10 @@ if _HAS_LIGHTGBM:
                 "logistic_brier": logistic_brier,
                 "selected": selected,
             }
-            print(f"  [ML] Horizon {horizon}: selected {selected} "
-                  f"(lgb_brier={lgb_brier:.4f}, logistic_brier={logistic_brier:.4f})")
+            print(
+                f"  [ML] Horizon {horizon}: selected {selected} "
+                f"(lgb_brier={lgb_brier:.4f}, logistic_brier={logistic_brier:.4f})"
+            )
 
         def _train_severity_ensemble(
             self,
@@ -267,8 +279,8 @@ if _HAS_LIGHTGBM:
             """
             for label, target in severity_targets.items():
                 y = target.iloc[:train_end_idx] if train_end_idx is not None else target.copy()
-                valid = y.notna() & X.iloc[:len(y)].notna().any(axis=1)
-                X_sev = X.iloc[:len(y)][valid]
+                valid = y.notna() & X.iloc[: len(y)].notna().any(axis=1)
+                X_sev = X.iloc[: len(y)][valid]
                 y_sev = y[valid].astype(int)
 
                 if len(X_sev) < min_train_samples or y_sev.nunique() < 2:
@@ -321,8 +333,8 @@ if _HAS_LIGHTGBM:
             train_X = X.iloc[:split_idx]
             train_y = y.iloc[:split_idx]
             train_w = sample_weights[:split_idx]
-            val_X = X.iloc[split_idx + gap_days:]
-            val_y = y.iloc[split_idx + gap_days:]
+            val_X = X.iloc[split_idx + gap_days :]
+            val_y = y.iloc[split_idx + gap_days :]
 
             if len(val_y) < 50 or val_y.nunique() < 2:
                 # Fallback: use last 20% without gap (less ideal but functional)
@@ -337,7 +349,10 @@ if _HAS_LIGHTGBM:
             # LightGBM's LabelEncoder will crash if val_y contains a label
             # not seen in train_y (e.g., train has only 0, val has 0 and 1).
             if train_y.nunique() < 2:
-                return {"success": False, "reason": f"Training set has only class {train_y.unique()[0]}"}
+                return {
+                    "success": False,
+                    "reason": f"Training set has only class {train_y.unique()[0]}",
+                }
             if val_y.nunique() < 2:
                 # Val set single-class: still train the model but skip early stopping
                 # by using a small portion of training data as eval set instead
@@ -356,14 +371,14 @@ if _HAS_LIGHTGBM:
                 "objective": "binary",
                 "metric": "binary_logloss",
                 "n_estimators": self.n_estimators,
-                "max_depth": 7,              # Deeper to capture interactions
-                "num_leaves": 40,            # More leaves for nuance
-                "learning_rate": 0.008,      # Slow learning → more iterations → better fit
-                "min_child_samples": 30,     # Allow fine-grained splits
-                "subsample": 0.75,           # Row sampling
-                "colsample_bytree": 0.65,    # Column sampling
-                "reg_alpha": 0.05,           # Very light L1 (was 0.1)
-                "reg_lambda": 0.5,           # Light L2 (was 1.0)
+                "max_depth": 7,  # Deeper to capture interactions
+                "num_leaves": 40,  # More leaves for nuance
+                "learning_rate": 0.008,  # Slow learning → more iterations → better fit
+                "min_child_samples": 30,  # Allow fine-grained splits
+                "subsample": 0.75,  # Row sampling
+                "colsample_bytree": 0.65,  # Column sampling
+                "reg_alpha": 0.05,  # Very light L1 (was 0.1)
+                "reg_lambda": 0.5,  # Light L2 (was 1.0)
                 "min_gain_to_split": 0.002,  # Allow subtle splits
                 "scale_pos_weight": scale_pos,
                 "random_state": self.random_state,
@@ -373,7 +388,8 @@ if _HAS_LIGHTGBM:
 
             model = lgb.LGBMClassifier(**params)
             model.fit(
-                train_X, train_y,
+                train_X,
+                train_y,
                 sample_weight=train_w,
                 eval_set=[(val_X, val_y)],
                 callbacks=[
@@ -394,7 +410,7 @@ if _HAS_LIGHTGBM:
                 # Platt scaling on degenerate input produces garbage — skip.
                 print(f"  [WARN] Zero variance in raw probs for {horizon}, skipping calibration")
             else:
-                calibrator = _PlattScaler(C=1.0, solver='lbfgs', max_iter=1000)
+                calibrator = _PlattScaler(C=1.0, solver="lbfgs", max_iter=1000)
                 calibrator.fit(raw_probs.reshape(-1, 1), val_y.values)
                 self.calibrators[horizon] = calibrator
 
@@ -466,10 +482,17 @@ if _HAS_LIGHTGBM:
                 # Try fuzzy matching for common naming variations
                 feat_map = {
                     "vix_zscore": ["VIX_zscore", "vix_z", "VIX_z_score"],
-                    "yield_curve_10y3m": ["yield_curve", "T10Y3M", "yield_spread"],
-                    "credit_spread_chg_3m": ["credit_spread_3m", "hy_oas_chg", "credit_chg"],
-                    "sp500_12m_return": ["sp500_ret_12m", "momentum_12m", "ret_12m"],
+                    "term_spread": ["yield_curve_10y3m", "yield_curve", "T10Y3M", "yield_spread"],
+                    "credit_spread_proxy": [
+                        "hy_oas_chg_4w",
+                        "credit_spread_chg_3m",
+                        "hy_oas_chg",
+                        "credit_chg",
+                    ],
+                    "mom_12m": ["sp500_12m_return", "momentum_12m", "ret_12m"],
+                    "mom_6m": ["sp500_6m_return", "momentum_6m", "ret_6m"],
                     "vol_ratio_1m_12m": ["vol_ratio", "vratio_1m12m", "short_long_vol"],
+                    "vol_1m": ["garch_vol", "realized_vol", "volatility"],
                 }
                 for canonical, aliases in feat_map.items():
                     if canonical not in available_feats:
@@ -494,7 +517,7 @@ if _HAS_LIGHTGBM:
             if y_train.nunique() < 2 or y_val.nunique() < 2:
                 return
 
-            lr = _PlattScaler(C=0.1, solver='lbfgs', max_iter=1000, class_weight='balanced')
+            lr = _PlattScaler(C=0.1, solver="lbfgs", max_iter=1000, class_weight="balanced")
             lr.fit(X_train, y_train)
 
             self.logistic_models[horizon] = {
@@ -502,9 +525,11 @@ if _HAS_LIGHTGBM:
                 "scaler": scaler,
                 "features": available_feats,
             }
-            print(f"  [OK] Logistic crash model ({horizon}): "
-                  f"{len(available_feats)} features, "
-                  f"Brier={brier_score_loss(y_val, lr.predict_proba(X_val)[:, 1]):.4f}")
+            print(
+                f"  [OK] Logistic crash model ({horizon}): "
+                f"{len(available_feats)} features, "
+                f"Brier={brier_score_loss(y_val, lr.predict_proba(X_val)[:, 1]):.4f}"
+            )
 
         @staticmethod
         def _lookup_table_prob(features: pd.DataFrame) -> float:
@@ -562,7 +587,9 @@ if _HAS_LIGHTGBM:
                 # LightGBM near random — use logistic regression
                 lm = self.logistic_models[horizon]
                 feat_cols = lm["features"]
-                if isinstance(features, pd.DataFrame) and all(f in features.columns for f in feat_cols):
+                if isinstance(features, pd.DataFrame) and all(
+                    f in features.columns for f in feat_cols
+                ):
                     X_log = lm["scaler"].transform(features[feat_cols].fillna(0))
                     calibrated = lm["model"].predict_proba(X_log)[:, 1]
                 else:
@@ -581,9 +608,7 @@ if _HAS_LIGHTGBM:
                 raw = self.models[horizon].predict_proba(X)[:, 1]
 
                 if horizon in self.calibrators:
-                    calibrated = self.calibrators[horizon].predict_proba(
-                        raw.reshape(-1, 1)
-                    )[:, 1]
+                    calibrated = self.calibrators[horizon].predict_proba(raw.reshape(-1, 1))[:, 1]
                 else:
                     calibrated = raw
 
@@ -598,7 +623,9 @@ if _HAS_LIGHTGBM:
                 lookup_prob = self._lookup_table_prob(features)
                 for i in range(len(calibrated)):
                     if abs(calibrated[i] - lookup_prob) > divergence_threshold:
-                        calibrated[i] = (1 - blend_ratio) * calibrated[i] + blend_ratio * lookup_prob
+                        calibrated[i] = (1 - blend_ratio) * calibrated[
+                            i
+                        ] + blend_ratio * lookup_prob
 
             return np.clip(calibrated, 0.02, 0.98)
 
@@ -647,6 +674,7 @@ if _HAS_LIGHTGBM:
 
             try:
                 import shap
+
                 model = self.models[horizon]
                 X = features[self.feature_names] if isinstance(features, pd.DataFrame) else features
 
@@ -666,11 +694,13 @@ if _HAS_LIGHTGBM:
                     sv_row = sv
 
                 feat_shap = dict(zip(self.feature_names, sv_row))
-                top_10 = dict(sorted(
-                    feat_shap.items(),
-                    key=lambda x: abs(x[1]),
-                    reverse=True,
-                )[:10])
+                top_10 = dict(
+                    sorted(
+                        feat_shap.items(),
+                        key=lambda x: abs(x[1]),
+                        reverse=True,
+                    )[:10]
+                )
 
                 result["shap_values"] = top_10
 
@@ -696,10 +726,7 @@ if _HAS_LIGHTGBM:
             """Return top N features by combined importance across horizons."""
             if self.feature_importances_ is None:
                 return []
-            return sorted(
-                self.feature_importances_.items(),
-                key=lambda x: x[1], reverse=True
-            )[:n]
+            return sorted(self.feature_importances_.items(), key=lambda x: x[1], reverse=True)[:n]
 
         def get_shap_values(self, features: pd.DataFrame, horizon: str = "12m") -> list:
             """Compute SHAP values to explain why the model predicts high/low crash probability.
@@ -772,8 +799,7 @@ if _HAS_LIGHTGBM:
                 return {"base_prob_3m": None, "base_prob_12m": None, "scenarios": []}
 
             base_3m = (
-                float(self.predict_proba(base_features, "3m")[0])
-                if "3m" in self.models else None
+                float(self.predict_proba(base_features, "3m")[0]) if "3m" in self.models else None
             )
             base_12m = float(self.predict_proba(base_features, "12m")[0])
 
@@ -788,19 +814,22 @@ if _HAS_LIGHTGBM:
                         modified[col] = val
 
                 prob_3m = (
-                    float(self.predict_proba(modified, "3m")[0])
-                    if "3m" in self.models else None
+                    float(self.predict_proba(modified, "3m")[0]) if "3m" in self.models else None
                 )
                 prob_12m = float(self.predict_proba(modified, "12m")[0])
 
-                results.append({
-                    "label": label,
-                    "overrides": overrides,
-                    "crash_prob_3m": prob_3m,
-                    "crash_prob_12m": prob_12m,
-                    "delta_3m": (prob_3m - base_3m) if (prob_3m is not None and base_3m is not None) else None,
-                    "delta_12m": prob_12m - base_12m,
-                })
+                results.append(
+                    {
+                        "label": label,
+                        "overrides": overrides,
+                        "crash_prob_3m": prob_3m,
+                        "crash_prob_12m": prob_12m,
+                        "delta_3m": (prob_3m - base_3m)
+                        if (prob_3m is not None and base_3m is not None)
+                        else None,
+                        "delta_12m": prob_12m - base_12m,
+                    }
+                )
 
             return {
                 "base_prob_3m": base_3m,

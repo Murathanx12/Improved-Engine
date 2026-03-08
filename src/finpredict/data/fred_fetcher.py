@@ -24,7 +24,6 @@ Usage:
 import math
 
 import pandas as pd
-from typing import Optional
 
 from finpredict.config import config, api_keys
 

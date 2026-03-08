@@ -85,7 +85,9 @@ if _HAS_TORCH:
             # and predicts targets at index i + window_size - 1 (end of window)
             n_samples = len(features) - window_size
             if n_samples <= 0:
-                raise ValueError(f"Not enough data: {len(features)} rows < window_size {window_size}")
+                raise ValueError(
+                    f"Not enough data: {len(features)} rows < window_size {window_size}"
+                )
 
             self.X = np.array(features, dtype=np.float32)
             self.y = {}
@@ -94,20 +96,20 @@ if _HAS_TORCH:
                 self.y[h] = t[window_size:]  # align with end of each window
 
             self.n_samples = min(n_samples, len(list(self.y.values())[0]))
-            self.weights = sample_weights[window_size:self.n_samples + window_size] \
-                if sample_weights is not None else np.ones(self.n_samples, dtype=np.float32)
+            self.weights = (
+                sample_weights[window_size : self.n_samples + window_size]
+                if sample_weights is not None
+                else np.ones(self.n_samples, dtype=np.float32)
+            )
 
         def __len__(self):
             return self.n_samples
 
         def __getitem__(self, idx):
-            x = torch.from_numpy(self.X[idx: idx + self.window_size])
-            targets = torch.tensor(
-                [self.y[h][idx] for h in self.horizons], dtype=torch.float32
-            )
+            x = torch.from_numpy(self.X[idx : idx + self.window_size])
+            targets = torch.tensor([self.y[h][idx] for h in self.horizons], dtype=torch.float32)
             weight = torch.tensor(self.weights[idx], dtype=torch.float32)
             return x, targets, weight
-
 
     # ═══════════════════════════════════════════════════════════════════
     # LSTM MODEL
@@ -171,7 +173,6 @@ if _HAS_TORCH:
             last_hidden = h_n[-1]  # Last layer's hidden state: (batch, hidden_dim)
             return self.head(last_hidden)
 
-
     # ═══════════════════════════════════════════════════════════════════
     # TCN MODEL
     # ═══════════════════════════════════════════════════════════════════
@@ -183,14 +184,17 @@ if _HAS_TORCH:
             super().__init__()
             self.padding = (kernel_size - 1) * dilation
             self.conv = nn.Conv1d(
-                in_channels, out_channels, kernel_size,
-                padding=self.padding, dilation=dilation,
+                in_channels,
+                out_channels,
+                kernel_size,
+                padding=self.padding,
+                dilation=dilation,
             )
 
         def forward(self, x):
             out = self.conv(x)
             if self.padding > 0:
-                out = out[:, :, :-self.padding]  # Remove future-looking padding
+                out = out[:, :, : -self.padding]  # Remove future-looking padding
             return out
 
     class _TCNBlock(nn.Module):
@@ -208,8 +212,11 @@ if _HAS_TORCH:
                 nn.ReLU(),
                 nn.Dropout(dropout),
             )
-            self.residual = nn.Conv1d(in_channels, out_channels, 1) \
-                if in_channels != out_channels else nn.Identity()
+            self.residual = (
+                nn.Conv1d(in_channels, out_channels, 1)
+                if in_channels != out_channels
+                else nn.Identity()
+            )
 
         def forward(self, x):
             return self.net(x) + self.residual(x)
@@ -247,7 +254,7 @@ if _HAS_TORCH:
             layers = []
             in_ch = input_dim
             for i, out_ch in enumerate(num_channels):
-                dilation = 2 ** i
+                dilation = 2**i
                 layers.append(_TCNBlock(in_ch, out_ch, kernel_size, dilation, dropout))
                 in_ch = out_ch
 
@@ -272,7 +279,6 @@ if _HAS_TORCH:
             # Global average pooling over the temporal dimension
             pooled = tcn_out.mean(dim=2)
             return self.head(pooled)
-
 
     # ═══════════════════════════════════════════════════════════════════
     # TEMPORAL ENSEMBLE
@@ -343,7 +349,10 @@ if _HAS_TORCH:
             # Check minimum data
             n_available = len(X) - self.WINDOW_SIZE
             if n_available < min_sequences:
-                return {"success": False, "reason": f"Only {n_available} sequences < {min_sequences}"}
+                return {
+                    "success": False,
+                    "reason": f"Only {n_available} sequences < {min_sequences}",
+                }
 
             # Build target dict with aligned arrays
             target_arrays = {}
@@ -368,12 +377,12 @@ if _HAS_TORCH:
                 split_point = len(X_raw) - val_size - self.WINDOW_SIZE
                 gap_days = 0
 
-            assert split_point > self.WINDOW_SIZE, (
-                f"split_point ({split_point}) must exceed WINDOW_SIZE ({self.WINDOW_SIZE})"
-            )
+            assert (
+                split_point > self.WINDOW_SIZE
+            ), f"split_point ({split_point}) must exceed WINDOW_SIZE ({self.WINDOW_SIZE})"
 
             # Normalize features using ONLY training portion statistics (no leakage)
-            X_train_raw = X_raw[:split_point + self.WINDOW_SIZE]
+            X_train_raw = X_raw[: split_point + self.WINDOW_SIZE]
             self._train_mean = X_train_raw.mean(axis=0).astype(np.float32)
             self._train_std = X_train_raw.std(axis=0).astype(np.float32)
             self._train_std = np.clip(self._train_std, 1e-8, None)
@@ -383,29 +392,41 @@ if _HAS_TORCH:
             X_norm = np.nan_to_num(X_norm, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Build datasets
-            train_X = X_norm[:split_point + self.WINDOW_SIZE]
-            train_targets = {h: t[:split_point + self.WINDOW_SIZE] for h, t in target_arrays.items()}
-            train_weights = temporal_weights[:split_point + self.WINDOW_SIZE]
+            train_X = X_norm[: split_point + self.WINDOW_SIZE]
+            train_targets = {
+                h: t[: split_point + self.WINDOW_SIZE] for h, t in target_arrays.items()
+            }
+            train_weights = temporal_weights[: split_point + self.WINDOW_SIZE]
 
             val_start = split_point + self.WINDOW_SIZE + gap_days
-            val_X = X_norm[val_start - self.WINDOW_SIZE:]
-            val_targets = {h: t[val_start - self.WINDOW_SIZE:] for h, t in target_arrays.items()}
+            val_X = X_norm[val_start - self.WINDOW_SIZE :]
+            val_targets = {h: t[val_start - self.WINDOW_SIZE :] for h, t in target_arrays.items()}
 
             try:
                 train_ds = CrashSequenceDataset(
-                    train_X, train_targets, self.WINDOW_SIZE, train_weights,
+                    train_X,
+                    train_targets,
+                    self.WINDOW_SIZE,
+                    train_weights,
                 )
                 val_ds = CrashSequenceDataset(
-                    val_X, val_targets, self.WINDOW_SIZE,
+                    val_X,
+                    val_targets,
+                    self.WINDOW_SIZE,
                 )
             except ValueError as e:
                 return {"success": False, "reason": str(e)}
 
             if len(train_ds) < min_sequences // 2 or len(val_ds) < 50:
-                return {"success": False, "reason": f"Insufficient sequences: train={len(train_ds)}, val={len(val_ds)}"}
+                return {
+                    "success": False,
+                    "reason": f"Insufficient sequences: train={len(train_ds)}, val={len(val_ds)}",
+                }
 
             train_loader = DataLoader(
-                train_ds, batch_size=batch_size, shuffle=True,
+                train_ds,
+                batch_size=batch_size,
+                shuffle=True,
                 generator=torch.Generator().manual_seed(self.random_state),
             )
             val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
@@ -421,8 +442,13 @@ if _HAS_TORCH:
                 n_horizons=n_horizons,
             ).to(self._device)
             lstm_metrics = self._train_model(
-                self.lstm_model, train_loader, val_loader,
-                n_epochs, lr, patience, "LSTM",
+                self.lstm_model,
+                train_loader,
+                val_loader,
+                n_epochs,
+                lr,
+                patience,
+                "LSTM",
             )
 
             # Train TCN
@@ -432,8 +458,13 @@ if _HAS_TORCH:
                 n_horizons=n_horizons,
             ).to(self._device)
             tcn_metrics = self._train_model(
-                self.tcn_model, train_loader, val_loader,
-                n_epochs, lr, patience, "TCN",
+                self.tcn_model,
+                train_loader,
+                val_loader,
+                n_epochs,
+                lr,
+                patience,
+                "TCN",
             )
 
             self.is_trained = True
@@ -461,11 +492,14 @@ if _HAS_TORCH:
             """Train a single PyTorch model with early stopping."""
             optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='min', factor=0.5, patience=patience // 3,
+                optimizer,
+                mode="min",
+                factor=0.5,
+                patience=patience // 3,
             )
-            criterion = nn.BCELoss(reduction='none')
+            criterion = nn.BCELoss(reduction="none")
 
-            best_val_loss = float('inf')
+            best_val_loss = float("inf")
             best_state = None
             no_improve = 0
 
@@ -498,7 +532,7 @@ if _HAS_TORCH:
                         val_loss += loss.item() * len(x)
                         n_val += len(x)
 
-                avg_train = train_loss / max(n_train, 1)
+                train_loss / max(n_train, 1)
                 avg_val = val_loss / max(n_val, 1)
                 scheduler.step(avg_val)
 
@@ -517,8 +551,10 @@ if _HAS_TORCH:
                 model.load_state_dict(best_state)
 
             epochs_trained = epoch + 1
-            print(f"  [{model_name}] Trained {epochs_trained} epochs, "
-                  f"best val loss: {best_val_loss:.4f}")
+            print(
+                f"  [{model_name}] Trained {epochs_trained} epochs, "
+                f"best val loss: {best_val_loss:.4f}"
+            )
 
             return {"best_val_loss": best_val_loss, "epochs_trained": epochs_trained}
 
@@ -541,7 +577,11 @@ if _HAS_TORCH:
             h_idx = self._horizons.index(horizon)
 
             # Normalize using training statistics
-            X = features[self.feature_names].values if isinstance(features, pd.DataFrame) else features
+            X = (
+                features[self.feature_names].values
+                if isinstance(features, pd.DataFrame)
+                else features
+            )
             X_norm = (X.astype(np.float32) - self._train_mean) / self._train_std
             X_norm = np.nan_to_num(X_norm, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -553,9 +593,7 @@ if _HAS_TORCH:
 
             # Create sequences: one per row that has enough history
             n_sequences = len(X_norm) - self.WINDOW_SIZE + 1
-            sequences = np.stack([
-                X_norm[i: i + self.WINDOW_SIZE] for i in range(n_sequences)
-            ])
+            sequences = np.stack([X_norm[i : i + self.WINDOW_SIZE] for i in range(n_sequences)])
             x_tensor = torch.from_numpy(sequences).to(self._device)
 
             # Predict with both models
@@ -569,7 +607,9 @@ if _HAS_TORCH:
 
             if not preds:
                 base = _cfg.get("ml", {}).get("crash_base_rate_fallback", 0.12)
-                logger.warning("[WARN] No temporal models available, returning base rate %.2f", base)
+                logger.warning(
+                    "[WARN] No temporal models available, returning base rate %.2f", base
+                )
                 return np.full(n_sequences, base)
 
             # Average ensemble predictions
@@ -590,7 +630,11 @@ if _HAS_TORCH:
                 horizon = self._horizons[-1]
             h_idx = self._horizons.index(horizon)
 
-            X = features[self.feature_names].values if isinstance(features, pd.DataFrame) else features
+            X = (
+                features[self.feature_names].values
+                if isinstance(features, pd.DataFrame)
+                else features
+            )
             X_norm = (X.astype(np.float32) - self._train_mean) / self._train_std
             X_norm = np.nan_to_num(X_norm, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -599,9 +643,7 @@ if _HAS_TORCH:
                 X_norm = np.vstack([pad, X_norm])
 
             n_sequences = len(X_norm) - self.WINDOW_SIZE + 1
-            sequences = np.stack([
-                X_norm[i: i + self.WINDOW_SIZE] for i in range(n_sequences)
-            ])
+            sequences = np.stack([X_norm[i : i + self.WINDOW_SIZE] for i in range(n_sequences)])
             x_tensor = torch.from_numpy(sequences).to(self._device)
 
             result = {}
@@ -650,7 +692,7 @@ else:
             return {"success": False, "reason": "PyTorch not installed"}
 
         def predict_proba(self, features, horizon: str = "12m"):
-            n = len(features) if hasattr(features, '__len__') else 1
+            n = len(features) if hasattr(features, "__len__") else 1
             base = _cfg.get("ml", {}).get("crash_base_rate_fallback", 0.12)
             logger.warning("[WARN] PyTorch not installed, returning base rate %.2f", base)
             return np.full(n, base)
@@ -664,6 +706,8 @@ else:
 
 
 __all__ = [
-    "CrashSequenceDataset", "LSTMCrashModel", "TCNCrashModel",
+    "CrashSequenceDataset",
+    "LSTMCrashModel",
+    "TCNCrashModel",
     "TemporalEnsemble",
 ]

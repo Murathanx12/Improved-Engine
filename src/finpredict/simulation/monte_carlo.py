@@ -45,6 +45,7 @@ from finpredict.config import config, get_scenario_configs
 # BLOCK BOOTSTRAP
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def _generate_block_bootstrap_residuals(
     historical_returns: np.ndarray,
     days: int,
@@ -104,29 +105,30 @@ def _generate_block_bootstrap_residuals(
 # CORE SIMULATION
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def simulate_paths(
     start_price: float,
-    historical_mu: float,       # Historical log-return mean (annualized)
-    historical_sigma: float,    # Historical volatility (annualized)
-    days: int,                  # Simulation horizon in trading days
-    n_sims: int,                # Number of Monte Carlo paths
-    crash_freq: float,          # Historical crash frequency (crashes/year)
-    risk_score: float,          # Current composite risk score
-    scenario: dict,             # Scenario adjustments
+    historical_mu: float,  # Historical log-return mean (annualized)
+    historical_sigma: float,  # Historical volatility (annualized)
+    days: int,  # Simulation horizon in trading days
+    n_sims: int,  # Number of Monte Carlo paths
+    crash_freq: float,  # Historical crash frequency (crashes/year)
+    risk_score: float,  # Current composite risk score
+    scenario: dict,  # Scenario adjustments
     # ── ML INPUTS (the key change) ────────────────────────────────
-    ml_crash_prob: Optional[float] = None,      # ML 12m crash probability
-    ml_predicted_return: Optional[float] = None, # ML 12m expected return
-    ml_return_p10: Optional[float] = None,       # ML 10th percentile return
-    ml_return_p90: Optional[float] = None,       # ML 90th percentile return
-    garch_vol: Optional[float] = None,           # GARCH conditional volatility
-    garch_persistence: Optional[float] = None,   # GARCH alpha+beta (vol persistence)
+    ml_crash_prob: Optional[float] = None,  # ML 12m crash probability
+    ml_predicted_return: Optional[float] = None,  # ML 12m expected return
+    ml_return_p10: Optional[float] = None,  # ML 10th percentile return
+    ml_return_p90: Optional[float] = None,  # ML 90th percentile return
+    garch_vol: Optional[float] = None,  # GARCH conditional volatility
+    garch_persistence: Optional[float] = None,  # GARCH alpha+beta (vol persistence)
     # ── GARCH-DERIVED SIMULATION PARAMS ─────────────────────────
-    xi: Optional[float] = None,                    # Vol-of-vol coefficient (data-derived)
-    rho_leverage: Optional[float] = None,          # Leverage effect correlation (data-derived)
+    xi: Optional[float] = None,  # Vol-of-vol coefficient (data-derived)
+    rho_leverage: Optional[float] = None,  # Leverage effect correlation (data-derived)
     # ── HMM REGIME INPUTS ────────────────────────────────────────
-    hmm_state_means: Optional[np.ndarray] = None,   # [bull_mu, bear_mu, crisis_mu]
-    hmm_regime_probs: Optional[np.ndarray] = None,   # [p_bull, p_bear, p_crisis]
-    hmm_state_vols: Optional[np.ndarray] = None,     # [bull_vol, bear_vol, crisis_vol]
+    hmm_state_means: Optional[np.ndarray] = None,  # [bull_mu, bear_mu, crisis_mu]
+    hmm_regime_probs: Optional[np.ndarray] = None,  # [p_bull, p_bear, p_crisis]
+    hmm_state_vols: Optional[np.ndarray] = None,  # [bull_vol, bear_vol, crisis_vol]
     # ── BLOCK BOOTSTRAP ───────────────────────────────────────────
     historical_residuals: Optional[np.ndarray] = None,  # For block bootstrap
     # ── LEGACY (for backward compat) ──────────────────────────────
@@ -214,7 +216,7 @@ def simulate_paths(
     # Vol-of-vol: how much volatility itself fluctuates
     # Estimated from GARCH conditional volatility (passed as parameter)
     # Falls back to conservative default if not provided
-    garch_params = sim_cfg.get("garch_derived_params", {})
+    sim_cfg.get("garch_derived_params", {})
     if xi is None:
         xi = 0.06  # Fallback when GARCH-derived value not available
     xi = float(xi)
@@ -237,8 +239,8 @@ def simulate_paths(
         jump_rate = crash_freq * scenario.get("crash_mult", 1.0)
         jump_rate = np.clip(jump_rate, 0.02, 0.20)
 
-    jump_mean = jump_cfg["mean"]      # ~-10% average jump (from data)
-    jump_std = jump_cfg["std"]        # ~5% jump vol (from data)
+    jump_mean = jump_cfg["mean"]  # ~-10% average jump (from data)
+    jump_std = jump_cfg["std"]  # ~5% jump vol (from data)
     daily_jump_prob = jump_rate * dt
 
     # ═══════════════════════════════════════════════════════════════
@@ -288,7 +290,11 @@ def simulate_paths(
     # Use block bootstrap if enabled and historical residuals are available
     use_block_bootstrap = sim_cfg.get("use_block_bootstrap", False)
     block_size = sim_cfg.get("block_bootstrap_size", 21)
-    if use_block_bootstrap and historical_residuals is not None and len(historical_residuals) > block_size:
+    if (
+        use_block_bootstrap
+        and historical_residuals is not None
+        and len(historical_residuals) > block_size
+    ):
         Z_price = _generate_block_bootstrap_residuals(
             historical_residuals, days, n_sims, block_size, rng
         )
@@ -321,8 +327,7 @@ def simulate_paths(
 
         # ── Ornstein-Uhlenbeck volatility dynamics ────────────────
         # σ_{t+1} = σ_t + κ(σ_LR - σ_t)dt + ξ·σ_t·√dt·Z
-        d_sigma = (kappa_vol * (long_run_vol - sigma_t) * dt
-                   + xi * sigma_t * np.sqrt(dt) * Z_vol[t])
+        d_sigma = kappa_vol * (long_run_vol - sigma_t) * dt + xi * sigma_t * np.sqrt(dt) * Z_vol[t]
         sigma_t = np.clip(sigma_t + d_sigma, 0.04, 1.0)
 
         # ── Price dynamics (GBM with jumps) ───────────────────────
@@ -331,11 +336,7 @@ def simulate_paths(
         diffusion = sigma_t * np.sqrt(dt) * Z_price[t]
 
         # Jump component
-        jumps = np.where(
-            Z_jump[t] < daily_jump_prob,
-            Z_jump_size[t],
-            0.0
-        )
+        jumps = np.where(Z_jump[t] < daily_jump_prob, Z_jump_size[t], 0.0)
 
         # Log-price step
         log_return = drift_daily + diffusion + jumps
@@ -352,6 +353,7 @@ def simulate_paths(
 # ═══════════════════════════════════════════════════════════════════════
 # SCENARIO-WEIGHTED SIMULATION
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def run_monte_carlo(
     current_price: float,
@@ -400,8 +402,13 @@ def run_monte_carlo(
     # ── Dynamic scenario weighting based on ML + macro signals ────
     # These weights are ADJUSTED from base probabilities using current data
     scenario_weights = _adjust_scenario_weights(
-        scenarios, current_vix, yield_curve, risk_score,
-        recession_prob, ml_crash_prob, ml_predicted_return,
+        scenarios,
+        current_vix,
+        yield_curve,
+        risk_score,
+        recession_prob,
+        ml_crash_prob,
+        ml_predicted_return,
     )
 
     # ── Use ML prediction as the base drift ───────────────────────
@@ -410,10 +417,11 @@ def run_monte_carlo(
     # actually affects drift (previously it was applied to historical_mu
     # which was bypassed when ml_predicted_return was set).
     from finpredict.config import get_institutional_return
+
     inst_return = get_institutional_return()
 
     if ml_predicted_return is not None:
-        base_annual_return = ml_predicted_return - val_penalty
+        base_annual_return = ml_predicted_return  # ML already captures valuation via features
     else:
         base_annual_return = inst_return - val_penalty
 
@@ -453,8 +461,14 @@ def run_monte_carlo(
             scenario_seed = seed + i
 
         paths = simulate_paths(
-            current_price, historical_mu, historical_sigma, days,
-            sims_for_scenario, crash_freq, risk_score, scenario_params,
+            current_price,
+            historical_mu,
+            historical_sigma,
+            days,
+            sims_for_scenario,
+            crash_freq,
+            risk_score,
+            scenario_params,
             ml_crash_prob=ml_crash_prob,
             ml_predicted_return=base_annual_return,
             ml_return_p10=ml_return_p10,
@@ -476,8 +490,10 @@ def run_monte_carlo(
             "mean_final": float(paths[-1].mean()),
         }
 
-        print(f"  [OK] {name} ({weight*100:.0f}%): "
-              f"{sims_for_scenario:,} sims -> ${paths[-1].mean():,.0f}")
+        print(
+            f"  [OK] {name} ({weight*100:.0f}%): "
+            f"{sims_for_scenario:,} sims -> ${paths[-1].mean():,.0f}"
+        )
 
         all_paths = paths if all_paths is None else np.hstack([all_paths, paths])
 
@@ -490,7 +506,7 @@ def run_monte_carlo(
     sim_dd = (all_paths - sim_peak) / sim_peak
 
     # 1-year crash: max drawdown in first 252 days
-    yr1_dd = sim_dd[:min(252, days+1)]
+    yr1_dd = sim_dd[: min(252, days + 1)]
     crash_1y = float((yr1_dd.min(axis=0) <= crash_threshold).mean()) * 100
 
     # Full-period crash
@@ -526,16 +542,21 @@ def run_monte_carlo(
     p95_path = np.percentile(all_paths, 95, axis=1)
 
     # ── Crash probability by horizon ──────────────────────────────
-    trading_days_per_year = sim_cfg["trading_days_per_year"]
+    sim_cfg["trading_days_per_year"]
     crash_probs = {}
     horizon_map = {
-        "1mo": 21, "3mo": 63, "6mo": 126,
-        "12mo": 252, "24mo": 504, "36mo": 756, "60mo": days,
+        "1mo": 21,
+        "3mo": 63,
+        "6mo": 126,
+        "12mo": 252,
+        "24mo": 504,
+        "36mo": 756,
+        "60mo": days,
     }
     for label, horizon_days in horizon_map.items():
         if horizon_days > days:
             horizon_days = days
-        h_dd = sim_dd[:horizon_days + 1]
+        h_dd = sim_dd[: horizon_days + 1]
         crash_probs[label] = float((h_dd.min(axis=0) <= crash_threshold).mean()) * 100
 
     # ── Enrich scenario results with config fields ─────────────────
@@ -543,13 +564,15 @@ def run_monte_carlo(
         if name in scenario_results:
             mean_final = scenario_results[name]["mean_final"]
             scen_total_ret = (mean_final / current_price - 1) * 100
-            scenario_results[name].update({
-                "probability": scenario_results[name]["weight"],
-                "return": scfg.get("return", 0.0),
-                "total_return": scen_total_ret,
-                "volatility": scfg.get("volatility", historical_sigma),
-                "description": scfg.get("description", ""),
-            })
+            scenario_results[name].update(
+                {
+                    "probability": scenario_results[name]["weight"],
+                    "return": scfg.get("return", 0.0),
+                    "total_return": scen_total_ret,
+                    "volatility": scfg.get("volatility", historical_sigma),
+                    "description": scfg.get("description", ""),
+                }
+            )
 
     # ── Realism validation ──────────────────────────────────────
     realism = _validate_realism(all_paths, current_price, sim_cfg["forecast_years"])
@@ -608,12 +631,12 @@ def _adjust_scenario_weights(
 ) -> dict:
     """
     Dynamically adjust scenario probabilities based on current market state.
-    
+
     The ML model's crash/return predictions tilt the scenario distribution:
     - High crash prob → more weight on bearish scenarios
     - Low crash prob → more weight on bullish scenarios
     - ML return prediction shifts the center of mass
-    
+
     All adjustments are proportional and re-normalized to sum to 1.0.
     """
     weights = {name: scfg["probability"] for name, scfg in scenarios.items()}
@@ -626,9 +649,9 @@ def _adjust_scenario_weights(
         for name, scfg in scenarios.items():
             category = scfg.get("category", "neutral")
             if category == "bearish":
-                weights[name] *= (1 + max(0, crash_tilt))
+                weights[name] *= 1 + max(0, crash_tilt)
             elif category == "bullish":
-                weights[name] *= (1 + max(0, -crash_tilt))
+                weights[name] *= 1 + max(0, -crash_tilt)
 
     # ── Macro-based tilt ──────────────────────────────────────────
     if recession_prob is not None and recession_prob > 0.30:
@@ -684,7 +707,7 @@ def _validate_realism(
     """
     final = paths[-1]
     n_sims = paths.shape[1]
-    trading_days = paths.shape[0] - 1
+    paths.shape[0] - 1
 
     # Annual return
     total_returns = final / start_price - 1
@@ -703,7 +726,7 @@ def _validate_realism(
 
     # Fat tails (kurtosis of daily returns)
     # Sample a subset of paths for efficiency
-    sample_rets = daily_log_rets[:, :min(1000, n_sims)].flatten()
+    sample_rets = daily_log_rets[:, : min(1000, n_sims)].flatten()
     kurt = float(pd.Series(sample_rets).kurtosis())
     skew = float(pd.Series(sample_rets).skew())
 

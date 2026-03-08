@@ -22,7 +22,6 @@ Integration points:
 """
 
 import numpy as np
-from typing import Optional
 
 
 def compute_event_score(

@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ruff check:*)",
+      "Bash(python:*)",
+      "Bash(grep:*)",
+      "Bash(rm:*)",
+      "Bash(.venv/Scripts/python:*)",
+      "Bash(xargs:*)",
+      "Bash(.venv/Scripts/pip install:*)",
+      "Bash(.venv/Scripts/pre-commit install:*)",
+      "Bash(.venv/Scripts/ruff check:*)"
+    ]
+  }
+}

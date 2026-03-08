@@ -19,13 +19,14 @@ Usage:
 
 import os
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import yaml
 from dotenv import load_dotenv
 
 
 # ── Locate project root (walk up until we find engine_config.yaml) ──────────────────
+
 
 def _find_project_root() -> Path:
     """Find project root by looking for engine_config.yaml."""
@@ -47,9 +48,11 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 # ── API Keys (typed access) ─────────────────────────────────────────────────────────
 
+
 @dataclass
 class APIKeys:
     """All API keys, loaded from .env file."""
+
     fred: str = ""
     finnhub: str = ""
     fmp: str = ""
@@ -84,6 +87,7 @@ class APIKeys:
 
 # ── Load engine_config.yaml ─────────────────────────────────────────────────────────
 
+
 def _load_config() -> dict:
     """Load engine configuration from YAML file."""
     config_path = PROJECT_ROOT / "engine_config.yaml"
@@ -104,14 +108,12 @@ api_keys: APIKeys = APIKeys.from_env()
 
 # ── Convenience accessors ───────────────────────────────────────────────────────────
 
+
 def get_institutional_return() -> float:
     """Compute consensus institutional expected return, adjusted for horizon."""
     benchmarks = config["institutional_benchmarks"]
     adj = benchmarks.get("horizon_adjustment", 1.05)
-    returns = [
-        v["annual"] for k, v in benchmarks.items()
-        if isinstance(v, dict) and "annual" in v
-    ]
+    returns = [v["annual"] for k, v in benchmarks.items() if isinstance(v, dict) and "annual" in v]
     return float(sum(returns) / len(returns)) * adj
 
 

@@ -31,14 +31,15 @@ from finpredict.config import config
 @dataclass
 class ExternalValidation:
     """Result of external validation checks."""
-    lei_signal: str = "UNKNOWN"          # "EXPANSION" / "WARNING" / "RECESSION"
-    sloos_signal: str = "UNKNOWN"        # "EASING" / "NEUTRAL" / "TIGHTENING"
-    fed_signal: str = "UNKNOWN"          # "HAWKISH" / "NEUTRAL" / "DOVISH"
-    sentiment_signal: str = "UNKNOWN"    # "EXTREME_FEAR" / "FEAR" / "NEUTRAL" / "GREED"
-    imf_signal: str = "UNKNOWN"          # "GROWTH" / "SLOWDOWN" / "CONTRACTION"
+
+    lei_signal: str = "UNKNOWN"  # "EXPANSION" / "WARNING" / "RECESSION"
+    sloos_signal: str = "UNKNOWN"  # "EASING" / "NEUTRAL" / "TIGHTENING"
+    fed_signal: str = "UNKNOWN"  # "HAWKISH" / "NEUTRAL" / "DOVISH"
+    sentiment_signal: str = "UNKNOWN"  # "EXTREME_FEAR" / "FEAR" / "NEUTRAL" / "GREED"
+    imf_signal: str = "UNKNOWN"  # "GROWTH" / "SLOWDOWN" / "CONTRACTION"
     fed_futures_signal: str = "UNKNOWN"  # "CUT_EXPECTED" / "HOLD" / "HIKE_EXPECTED"
-    consensus_direction: str = "UNKNOWN" # "BULLISH" / "NEUTRAL" / "BEARISH"
-    engine_agreement: float = 0.0        # 0-1: fraction of signals that agree
+    consensus_direction: str = "UNKNOWN"  # "BULLISH" / "NEUTRAL" / "BEARISH"
+    engine_agreement: float = 0.0  # 0-1: fraction of signals that agree
     divergence_alerts: list = field(default_factory=list)
 
 
@@ -117,7 +118,11 @@ def validate_external(
             # market is crisis response (2008, 2020), not a conflict.
             market_in_stress = False
             if data is not None and "SP500" in data:
-                sp = data["SP500"].dropna() if hasattr(data["SP500"], 'dropna') else pd.Series(data["SP500"])
+                sp = (
+                    data["SP500"].dropna()
+                    if hasattr(data["SP500"], "dropna")
+                    else pd.Series(data["SP500"])
+                )
                 if len(sp) >= 252:
                     high_52w = sp.rolling(252).max().iloc[-1]
                     current = sp.iloc[-1]
@@ -133,9 +138,7 @@ def validate_external(
 
     # ── 4. Consumer Sentiment (proxy for retail sentiment) ─────────
     if fred_data and "consumer_sentiment" in fred_data:
-        result.sentiment_signal = _assess_sentiment(
-            fred_data["consumer_sentiment"], val_cfg
-        )
+        result.sentiment_signal = _assess_sentiment(fred_data["consumer_sentiment"], val_cfg)
         signals_total += 1
         # Extreme fear is contrarian-BULLISH (bearish sentiment = bullish signal)
         sentiment_bearish = result.sentiment_signal in ("NEUTRAL", "GREED")
@@ -143,7 +146,7 @@ def validate_external(
             signals_agree += 1
         elif result.sentiment_signal == "EXTREME_FEAR" and is_engine_bearish:
             result.divergence_alerts.append(
-                f"Consumer sentiment at EXTREME FEAR — "
+                "Consumer sentiment at EXTREME FEAR — "
                 "historically contrarian-bullish, engine's bearish call "
                 "may be at a sentiment bottom"
             )
@@ -189,14 +192,18 @@ def validate_external(
         result.engine_agreement = 0.0
 
     # Determine consensus direction
-    bearish_count = sum(1 for s in [
-        result.lei_signal in ("WARNING", "RECESSION"),
-        result.sloos_signal == "TIGHTENING",
-        result.fed_signal == "HAWKISH",
-        result.sentiment_signal in ("NEUTRAL", "GREED"),  # Not fearful = complacent
-        result.imf_signal in ("SLOWDOWN", "CONTRACTION"),
-        result.fed_futures_signal == "HIKE_EXPECTED",
-    ] if s)
+    bearish_count = sum(
+        1
+        for s in [
+            result.lei_signal in ("WARNING", "RECESSION"),
+            result.sloos_signal == "TIGHTENING",
+            result.fed_signal == "HAWKISH",
+            result.sentiment_signal in ("NEUTRAL", "GREED"),  # Not fearful = complacent
+            result.imf_signal in ("SLOWDOWN", "CONTRACTION"),
+            result.fed_futures_signal == "HIKE_EXPECTED",
+        ]
+        if s
+    )
     if bearish_count >= 4:
         result.consensus_direction = "BEARISH"
     elif bearish_count <= 1:

@@ -16,7 +16,6 @@ Usage:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -27,6 +26,7 @@ from finpredict.config import config
 @dataclass
 class RegimeValidation:
     """Result of regime cross-validation checks."""
+
     regime: str
     confirmed: bool
     price_confirmed: bool
@@ -137,8 +137,7 @@ def _check_price_structure(
         confirmed = current_price > current_sma
         if confirmed:
             notes.append(
-                f"Price ABOVE 200d SMA ({pct_from_sma:+.1f}%) — "
-                "bullish structure intact"
+                f"Price ABOVE 200d SMA ({pct_from_sma:+.1f}%) — " "bullish structure intact"
             )
         else:
             notes.append(

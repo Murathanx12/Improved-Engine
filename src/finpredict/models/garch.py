@@ -22,19 +22,18 @@ import numpy as np
 import pandas as pd
 from typing import NamedTuple
 
-from finpredict.config import config
-
 
 class GARCHResult(NamedTuple):
     """Results from fitting a GJR-GARCH model."""
-    omega: float          # Constant in variance equation
-    alpha: float          # ARCH effect (reaction to shocks)
-    gamma: float          # Leverage effect (asymmetry)
-    beta: float           # GARCH effect (persistence)
-    current_vol: float    # Current annualized volatility
-    nu: float             # Degrees of freedom (Student-t)
-    model_fit: object     # The full arch model result (for forecasting)
-    success: bool         # Whether fit succeeded
+
+    omega: float  # Constant in variance equation
+    alpha: float  # ARCH effect (reaction to shocks)
+    gamma: float  # Leverage effect (asymmetry)
+    beta: float  # GARCH effect (persistence)
+    current_vol: float  # Current annualized volatility
+    nu: float  # Degrees of freedom (Student-t)
+    model_fit: object  # The full arch model result (for forecasting)
+    success: bool  # Whether fit succeeded
 
 
 def fit_garch(
@@ -71,7 +70,9 @@ def fit_garch(
         am = arch_model(
             scaled,
             vol="Garch",
-            p=1, o=1, q=1,
+            p=1,
+            o=1,
+            q=1,
             dist="skewt",
             mean="Constant",
         )
@@ -92,15 +93,20 @@ def fit_garch(
             print(f"  [WARN] GARCH vol {current_vol_annual:.2f} out of range, using fallback")
             return _fallback_result(returns)
 
-        print(f"  [GARCH] Fitted GJR-GARCH(1,1,1)")
+        print("  [GARCH] Fitted GJR-GARCH(1,1,1)")
         print(f"  [GARCH] α={alpha:.4f}, γ={gamma:.4f} (leverage), β={beta:.4f}")
         print(f"  [GARCH] Current conditional vol: {current_vol_annual*100:.1f}% annualized")
         print(f"  [GARCH] Student-t df: {nu:.1f}")
 
         return GARCHResult(
-            omega=omega, alpha=alpha, gamma=gamma, beta=beta,
-            current_vol=current_vol_annual, nu=nu,
-            model_fit=res, success=True,
+            omega=omega,
+            alpha=alpha,
+            gamma=gamma,
+            beta=beta,
+            current_vol=current_vol_annual,
+            nu=nu,
+            model_fit=res,
+            success=True,
         )
 
     except Exception as e:
@@ -147,14 +153,14 @@ def forecast_volatility(
         # If we need more than arch can forecast, extend with persistence
         if horizon > vol_paths.shape[0]:
             extended = np.zeros((horizon, n_sims))
-            extended[:vol_paths.shape[0]] = vol_paths
+            extended[: vol_paths.shape[0]] = vol_paths
             # Long-run variance for extension
             persistence = garch.alpha + garch.gamma / 2 + garch.beta
             lr_var = garch.omega / (1 - persistence) if persistence < 1 else garch.omega * 100
             lr_vol = np.sqrt(lr_var) / 100
             for t in range(vol_paths.shape[0], horizon):
                 # Mean-revert toward long-run vol
-                extended[t] = extended[t-1] * 0.99 + lr_vol * 0.01
+                extended[t] = extended[t - 1] * 0.99 + lr_vol * 0.01
             vol_paths = extended
 
         return vol_paths
@@ -167,6 +173,12 @@ def _fallback_result(returns: pd.Series) -> GARCHResult:
     """Create a fallback result using simple historical volatility."""
     vol = float(returns.dropna().std() * np.sqrt(252))
     return GARCHResult(
-        omega=0.01, alpha=0.05, gamma=0.05, beta=0.90,
-        current_vol=vol, nu=8.0, model_fit=None, success=False,
+        omega=0.01,
+        alpha=0.05,
+        gamma=0.05,
+        beta=0.90,
+        current_vol=vol,
+        nu=8.0,
+        model_fit=None,
+        success=False,
     )

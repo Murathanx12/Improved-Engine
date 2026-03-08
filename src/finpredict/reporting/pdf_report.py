@@ -11,11 +11,7 @@ Usage:
     generate_report(data, mc_results, bt_results, ...)
 """
 
-import os
-import numpy as np
-import pandas as pd
 from datetime import datetime, timedelta
-from io import BytesIO
 
 # reportlab is an optional dependency used only for PDF generation.
 # Provide a fallback so the engine can run without it.
@@ -23,12 +19,19 @@ try:
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.units import inch
     from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, PageBreak,
-        Image, Table, TableStyle, KeepTogether,
+        SimpleDocTemplate,
+        Paragraph,
+        Spacer,
+        PageBreak,
+        Image,
+        Table,
+        TableStyle,
+        KeepTogether,
     )
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+
     _REPORTLAB_AVAILABLE = True
 except ImportError:
     _REPORTLAB_AVAILABLE = False
@@ -36,38 +39,80 @@ except ImportError:
     letter = None
     inch = 1
     SimpleDocTemplate = object
-    Paragraph = lambda *args, **kwargs: None
-    Spacer = lambda *args, **kwargs: None
-    PageBreak = lambda *args, **kwargs: None
-    Image = lambda *args, **kwargs: None
-    Table = lambda *args, **kwargs: None
-    TableStyle = lambda *args, **kwargs: None
-    KeepTogether = lambda *args, **kwargs: None
+
+    def Paragraph(*args, **kwargs):
+        return None
+
+    def Spacer(*args, **kwargs):
+        return None
+
+    def PageBreak(*args, **kwargs):
+        return None
+
+    def Image(*args, **kwargs):
+        return None
+
+    def Table(*args, **kwargs):
+        return None
+
+    def TableStyle(*args, **kwargs):
+        return None
+
+    def KeepTogether(*args, **kwargs):
+        return None
+
     def getSampleStyleSheet():
         return {}
+
     class ParagraphStyle:
         def __init__(self, *args, **kwargs):
             pass
+
     class colors:
-        HexColor = lambda x: None
+        def HexColor(x):
+            return None
+
     TA_CENTER = TA_LEFT = TA_JUSTIFY = None
 
 from finpredict.config import config
 from finpredict.utils.charts import (
-    fig_to_image, chart_backtest, chart_projection, chart_crash_probability,
-    chart_risk_score, chart_scenarios, chart_sectors, chart_stocks,
-    chart_combined_projection_crash, chart_ml_crash_timeline,
-    chart_return_scatter, chart_calibration_diagram, CHART_COLORS,
-    chart_shap_waterfall, chart_stress_test, chart_credit_stress,
+    fig_to_image,
+    chart_backtest,
+    chart_projection,
+    chart_crash_probability,
+    chart_risk_score,
+    chart_scenarios,
+    chart_sectors,
+    chart_stocks,
+    chart_combined_projection_crash,
+    chart_ml_crash_timeline,
+    chart_return_scatter,
+    chart_calibration_diagram,
+    chart_shap_waterfall,
+    chart_stress_test,
+    chart_credit_stress,
 )
 
 
-def generate_report(data, mc_results, bt_results, sector_results, stock_results,
-                    current_price, regime, risk_score, crash_freq, output_path,
-                    shap_contributions=None, counterfactual_results=None,
-                    stress_results=None, fred_data=None,
-                    regime_validation=None, external_validation=None,
-                    crash_timing_results=None):
+def generate_report(
+    data,
+    mc_results,
+    bt_results,
+    sector_results,
+    stock_results,
+    current_price,
+    regime,
+    risk_score,
+    crash_freq,
+    output_path,
+    shap_contributions=None,
+    counterfactual_results=None,
+    stress_results=None,
+    fred_data=None,
+    regime_validation=None,
+    external_validation=None,
+    crash_timing_results=None,
+):
     """
     MODULE 10 ENTRY POINT: Generate comprehensive PDF report.
     """
@@ -76,46 +121,78 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
         return None
     print("[MODULE 10] Generating PDF report...")
 
-    doc = SimpleDocTemplate(output_path, pagesize=letter,
-                            leftMargin=0.75*inch, rightMargin=0.75*inch,
-                            topMargin=0.75*inch, bottomMargin=0.75*inch)
+    doc = SimpleDocTemplate(
+        output_path,
+        pagesize=letter,
+        leftMargin=0.75 * inch,
+        rightMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+    )
     styles = getSampleStyleSheet()
     story = []
 
     # Custom styles
-    title_style = ParagraphStyle('Title2', parent=styles['Heading1'],
-                                  fontSize=22, textColor=colors.HexColor('#FFD700'),
-                                  spaceAfter=6, alignment=TA_CENTER)
-    heading_style = ParagraphStyle('H2', parent=styles['Heading2'],
-                                    fontSize=16, textColor=colors.HexColor('#FFD700'),
-                                    spaceAfter=8, spaceBefore=12)
-    body_style = ParagraphStyle('Body2', parent=styles['BodyText'],
-                                 fontSize=10, leading=14, textColor=colors.HexColor('#333333'))
-    small_style = ParagraphStyle('Small', parent=styles['Normal'],
-                                  fontSize=8, textColor=colors.HexColor('#666666'))
+    title_style = ParagraphStyle(
+        "Title2",
+        parent=styles["Heading1"],
+        fontSize=22,
+        textColor=colors.HexColor("#FFD700"),
+        spaceAfter=6,
+        alignment=TA_CENTER,
+    )
+    heading_style = ParagraphStyle(
+        "H2",
+        parent=styles["Heading2"],
+        fontSize=16,
+        textColor=colors.HexColor("#FFD700"),
+        spaceAfter=8,
+        spaceBefore=12,
+    )
+    body_style = ParagraphStyle(
+        "Body2",
+        parent=styles["BodyText"],
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor("#333333"),
+    )
+    small_style = ParagraphStyle(
+        "Small", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#666666")
+    )
 
     def make_table(headers, rows, col_widths=None):
         """Helper to create styled tables."""
         tdata = [headers] + rows
         t = Table(tdata, colWidths=col_widths)
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a1a2e')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#FFD700')),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-            ('TOPPADDING', (0, 0), (-1, 0), 8),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f5f5f5')),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor('#f5f5f5'), colors.white]),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cccccc')),
-        ]))
+        t.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#FFD700")),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                    ("TOPPADDING", (0, 0), (-1, 0), 8),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f5f5")),
+                    (
+                        "ROWBACKGROUNDS",
+                        (0, 1),
+                        (-1, -1),
+                        [colors.HexColor("#f5f5f5"), colors.white],
+                    ),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+                ]
+            )
+        )
         return t
 
     # ===== PAGE 1: EXECUTIVE SUMMARY =====
     story.append(Paragraph("MARKET PREDICTION ENGINE v7.0", title_style))
-    story.append(Paragraph("Core Engine — Crash Probability &amp; 5-Year Projection", styles['Heading3']))
-    story.append(Spacer(1, 0.15*inch))
+    story.append(
+        Paragraph("Core Engine — Crash Probability &amp; 5-Year Projection", styles["Heading3"])
+    )
+    story.append(Spacer(1, 0.15 * inch))
 
     exec_text = f"""
     <b>Generated:</b> {datetime.now().strftime('%B %d, %Y at %I:%M %p')}<br/>
@@ -144,16 +221,16 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     story.append(Paragraph("MODEL VALIDATION", heading_style))
 
     if len(bt_results) > 0:
-        mape = bt_results.attrs.get('mape', 0)
-        coverage = bt_results.attrs.get('coverage', 0)
-        direction = bt_results.attrs.get('direction', 0)
-        brier = bt_results.attrs.get('brier_score', 0)
-        cal_low = bt_results.attrs.get('cal_low', 0)
-        cal_med = bt_results.attrs.get('cal_med', 0)
-        cal_high = bt_results.attrs.get('cal_high', 0)
-        n_low = bt_results.attrs.get('n_low', 0)
-        n_med = bt_results.attrs.get('n_med', 0)
-        n_high = bt_results.attrs.get('n_high', 0)
+        mape = bt_results.attrs.get("mape", 0)
+        coverage = bt_results.attrs.get("coverage", 0)
+        direction = bt_results.attrs.get("direction", 0)
+        brier = bt_results.attrs.get("brier_score", 0)
+        cal_low = bt_results.attrs.get("cal_low", 0)
+        cal_med = bt_results.attrs.get("cal_med", 0)
+        cal_high = bt_results.attrs.get("cal_high", 0)
+        n_low = bt_results.attrs.get("n_low", 0)
+        n_med = bt_results.attrs.get("n_med", 0)
+        n_high = bt_results.attrs.get("n_high", 0)
 
         bt_text = f"""
         The model was validated using <b>{len(bt_results)} walk-forward predictions</b> from
@@ -178,7 +255,7 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
         from "cheating" by using future information.
         """
         story.append(Paragraph(bt_text, body_style))
-    story.append(Spacer(1, 0.15*inch))
+    story.append(Spacer(1, 0.15 * inch))
     story.append(fig_to_image(chart_backtest(data, bt_results)))
     story.append(PageBreak())
 
@@ -192,36 +269,48 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     track actual outcomes, and whether crash probabilities are properly calibrated.
     """
     story.append(Paragraph(diag_text, body_style))
-    story.append(Spacer(1, 0.1*inch))
+    story.append(Spacer(1, 0.1 * inch))
 
     # Crash timeline
     crash_tl = chart_ml_crash_timeline(bt_results)
     if crash_tl is not None:
-        story.append(Paragraph("<b>Crash Probability Timeline</b> — Does the model's "
-                               "crash probability rise before actual crashes (red shading)?",
-                               small_style))
-        story.append(Spacer(1, 0.05*inch))
-        story.append(fig_to_image(crash_tl, height=2.8*inch))
-        story.append(Spacer(1, 0.15*inch))
+        story.append(
+            Paragraph(
+                "<b>Crash Probability Timeline</b> — Does the model's "
+                "crash probability rise before actual crashes (red shading)?",
+                small_style,
+            )
+        )
+        story.append(Spacer(1, 0.05 * inch))
+        story.append(fig_to_image(crash_tl, height=2.8 * inch))
+        story.append(Spacer(1, 0.15 * inch))
 
     # Return scatter
     ret_scat = chart_return_scatter(bt_results)
     if ret_scat is not None:
-        story.append(Paragraph("<b>Predicted vs Actual Returns</b> — Points near the "
-                               "diagonal indicate accurate predictions.",
-                               small_style))
-        story.append(Spacer(1, 0.05*inch))
-        story.append(fig_to_image(ret_scat, height=2.8*inch))
-        story.append(Spacer(1, 0.15*inch))
+        story.append(
+            Paragraph(
+                "<b>Predicted vs Actual Returns</b> — Points near the "
+                "diagonal indicate accurate predictions.",
+                small_style,
+            )
+        )
+        story.append(Spacer(1, 0.05 * inch))
+        story.append(fig_to_image(ret_scat, height=2.8 * inch))
+        story.append(Spacer(1, 0.15 * inch))
 
     # Calibration diagram
     cal_diag = chart_calibration_diagram(bt_results)
     if cal_diag is not None:
-        story.append(Paragraph("<b>Crash Calibration (Reliability Diagram)</b> — Bars on "
-                               "the diagonal mean the model is well-calibrated.",
-                               small_style))
-        story.append(Spacer(1, 0.05*inch))
-        story.append(fig_to_image(cal_diag, height=2.8*inch))
+        story.append(
+            Paragraph(
+                "<b>Crash Calibration (Reliability Diagram)</b> — Bars on "
+                "the diagonal mean the model is well-calibrated.",
+                small_style,
+            )
+        )
+        story.append(Spacer(1, 0.05 * inch))
+        story.append(fig_to_image(cal_diag, height=2.8 * inch))
 
     story.append(PageBreak())
 
@@ -236,14 +325,14 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     ({mc_results['annual_return_pct']:.1f}% annualized).
     """
     story.append(Paragraph(proj_text, body_style))
-    story.append(Spacer(1, 0.1*inch))
+    story.append(Spacer(1, 0.1 * inch))
     story.append(fig_to_image(chart_projection(mc_results, current_price)))
     story.append(PageBreak())
 
     # ===== PAGE 3b: COMBINED PROJECTION + CRASH PROBABILITY =====
     story.append(Paragraph("PROJECTION &amp; CRASH PROBABILITY COMBINED", heading_style))
 
-    combined_text = f"""
+    combined_text = """
     This chart combines the 5-year market projection with crash probability analysis.
     <b>Top panel:</b> Individual Monte Carlo paths colored by outcome — paths that
     experience a ≥20% peak-to-trough crash are highlighted in red. The fan shows
@@ -251,11 +340,14 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     by each time horizon.
     """
     story.append(Paragraph(combined_text, body_style))
-    story.append(Spacer(1, 0.1*inch))
-    story.append(fig_to_image(
-        chart_combined_projection_crash(mc_results, current_price),
-        width=7 * inch, height=4.5*inch
-    ))
+    story.append(Spacer(1, 0.1 * inch))
+    story.append(
+        fig_to_image(
+            chart_combined_projection_crash(mc_results, current_price),
+            width=7 * inch,
+            height=4.5 * inch,
+        )
+    )
     story.append(PageBreak())
 
     # ===== PAGE 4: SCENARIO ANALYSIS =====
@@ -266,31 +358,35 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     based on current regime, risk score, VIX level, and yield curve shape:
     """
     story.append(Paragraph(scenario_text, body_style))
-    story.append(Spacer(1, 0.1*inch))
+    story.append(Spacer(1, 0.1 * inch))
 
     scen_rows = []
-    for name, info in mc_results['scenarios'].items():
-        scen_rows.append([
-            name,
-            f"{info['probability']*100:.0f}%",
-            f"{info['total_return']:+.1f}%",
-            f"{info['volatility']*100:.0f}%",
-            info['description'][:50]
-        ])
-    story.append(make_table(
-        ['Scenario', 'Prob', '5Y Return', 'Vol', 'Description'],
-        scen_rows,
-        [1.3*inch, 0.6*inch, 0.8*inch, 0.6*inch, 3.5 * inch]
-    ))
-    story.append(Spacer(1, 0.15*inch))
+    for name, info in mc_results["scenarios"].items():
+        scen_rows.append(
+            [
+                name,
+                f"{info['probability']*100:.0f}%",
+                f"{info['total_return']:+.1f}%",
+                f"{info['volatility']*100:.0f}%",
+                info["description"][:50],
+            ]
+        )
+    story.append(
+        make_table(
+            ["Scenario", "Prob", "5Y Return", "Vol", "Description"],
+            scen_rows,
+            [1.3 * inch, 0.6 * inch, 0.8 * inch, 0.6 * inch, 3.5 * inch],
+        )
+    )
+    story.append(Spacer(1, 0.15 * inch))
     story.append(fig_to_image(chart_scenarios(mc_results, current_price)))
     story.append(PageBreak())
 
     # ===== PAGE 5: CRASH PROBABILITY =====
     story.append(Paragraph("CRASH PROBABILITY ANALYSIS", heading_style))
 
-    cp_1y = mc_results.get('crash_prob_1y', 0)
-    cp_5y = mc_results.get('crash_prob_5y', 0)
+    cp_1y = mc_results.get("crash_prob_1y", 0)
+    cp_5y = mc_results.get("crash_prob_5y", 0)
 
     crash_text = f"""
     <b>This is the primary deliverable of the engine.</b> The model estimates the probability
@@ -310,22 +406,26 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     and both normal market fluctuations and crash-jump events.
     """
     story.append(Paragraph(crash_text, body_style))
-    story.append(Spacer(1, 0.1*inch))
-    story.append(fig_to_image(chart_crash_probability(mc_results), height=3.2*inch))
+    story.append(Spacer(1, 0.1 * inch))
+    story.append(fig_to_image(chart_crash_probability(mc_results), height=3.2 * inch))
 
     # ── Crash Timing Distribution (3-month windows) ──
     if crash_timing_results:
-        story.append(Spacer(1, 0.2*inch))
-        story.append(Paragraph("<b>Crash Timing — 3-Month Window Distribution</b>", styles['Heading3']))
-        story.append(Paragraph(
-            "Which 3-month window has the highest crash probability? "
-            "The crash timing model distributes the 12-month crash probability "
-            "across quarterly windows to provide actionable timing precision.",
-            body_style,
-        ))
+        story.append(Spacer(1, 0.2 * inch))
+        story.append(
+            Paragraph("<b>Crash Timing — 3-Month Window Distribution</b>", styles["Heading3"])
+        )
+        story.append(
+            Paragraph(
+                "Which 3-month window has the highest crash probability? "
+                "The crash timing model distributes the 12-month crash probability "
+                "across quarterly windows to provide actionable timing precision.",
+                body_style,
+            )
+        )
         try:
             fig = _chart_crash_timing(crash_timing_results)
-            story.append(fig_to_image(fig, height=2.5*inch))
+            story.append(fig_to_image(fig, height=2.5 * inch))
         except Exception as e:
             story.append(Paragraph(f"[Crash timing chart error: {e}]", body_style))
 
@@ -343,8 +443,8 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     Values below -0.5σ indicate low-risk conditions favorable for equities.
     """
     story.append(Paragraph(risk_text, body_style))
-    story.append(Spacer(1, 0.1*inch))
-    story.append(fig_to_image(chart_risk_score(data), height=4.5*inch))
+    story.append(Spacer(1, 0.1 * inch))
+    story.append(fig_to_image(chart_risk_score(data), height=4.5 * inch))
     story.append(PageBreak())
 
     # ===== PAGE 6b: CREDIT STRESS INDICATORS =====
@@ -361,41 +461,47 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
         the current reading.
         """
         story.append(Paragraph(credit_text, body_style))
-        story.append(Spacer(1, 0.1*inch))
-        story.append(fig_to_image(credit_fig, height=5.5*inch))
+        story.append(Spacer(1, 0.1 * inch))
+        story.append(fig_to_image(credit_fig, height=5.5 * inch))
 
         # Current readings table
         credit_rows = []
-        for key, label in [("ted_spread", "TED Spread (%)"),
-                            ("hy_oas",     "HY OAS (bps)"),
-                            ("ig_oas",     "IG OAS (bps)")]:
+        for key, label in [
+            ("ted_spread", "TED Spread (%)"),
+            ("hy_oas", "HY OAS (bps)"),
+            ("ig_oas", "IG OAS (bps)"),
+        ]:
             if fred_data and key in fred_data and len(fred_data[key]) > 0:
                 series = fred_data[key].dropna()
                 if not series.empty:
                     current_val = float(series.iloc[-1])
-                    hist_avg    = float(series.mean())
-                    hist_max    = float(series.max())
-                    pct_of_max  = current_val / hist_max * 100 if hist_max > 0 else 0.0
-                    credit_rows.append([
-                        label,
-                        f"{current_val:.2f}",
-                        f"{hist_avg:.2f}",
-                        f"{hist_max:.2f}",
-                        f"{pct_of_max:.0f}%",
-                    ])
+                    hist_avg = float(series.mean())
+                    hist_max = float(series.max())
+                    pct_of_max = current_val / hist_max * 100 if hist_max > 0 else 0.0
+                    credit_rows.append(
+                        [
+                            label,
+                            f"{current_val:.2f}",
+                            f"{hist_avg:.2f}",
+                            f"{hist_max:.2f}",
+                            f"{pct_of_max:.0f}%",
+                        ]
+                    )
         if credit_rows:
-            story.append(Spacer(1, 0.1*inch))
-            story.append(make_table(
-                ["Indicator", "Current", "Hist. Avg", "Hist. Max", "% of Max"],
-                credit_rows,
-                [2.0*inch, 1.0*inch, 1.0*inch, 1.0*inch, 0.9*inch],
-            ))
+            story.append(Spacer(1, 0.1 * inch))
+            story.append(
+                make_table(
+                    ["Indicator", "Current", "Hist. Avg", "Hist. Max", "% of Max"],
+                    credit_rows,
+                    [2.0 * inch, 1.0 * inch, 1.0 * inch, 1.0 * inch, 0.9 * inch],
+                )
+            )
         story.append(PageBreak())
 
     # ===== PAGE 6c: AI EXPLAINABILITY — SHAP CRASH DRIVERS =====
     if shap_contributions:
         story.append(Paragraph("AI EXPLAINABILITY — CRASH PROBABILITY DRIVERS", heading_style))
-        shap_text = f"""
+        shap_text = """
         SHAP (SHapley Additive exPlanations) values decompose the model's current crash
         probability prediction into the contribution of each individual market signal.
         <b>Red bars push the crash probability higher</b>; <b>green bars push it lower</b>.
@@ -403,23 +509,25 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
         points to crash probability at a baseline of 50%.
         """
         story.append(Paragraph(shap_text, body_style))
-        story.append(Spacer(1, 0.1*inch))
+        story.append(Spacer(1, 0.1 * inch))
         shap_fig = chart_shap_waterfall(shap_contributions)
         if shap_fig is not None:
-            story.append(fig_to_image(shap_fig, height=3.8*inch))
-        story.append(Spacer(1, 0.1*inch))
+            story.append(fig_to_image(shap_fig, height=3.8 * inch))
+        story.append(Spacer(1, 0.1 * inch))
 
         # SHAP table — top 10 features with value and direction
         shap_rows = []
         for feat, sv in shap_contributions[:10]:
             direction = "INCREASES crash prob" if sv > 0 else "decreases crash prob"
             shap_rows.append([feat, f"{sv:+.5f}", direction])
-        story.append(make_table(
-            ["Feature", "SHAP Value", "Direction"],
-            shap_rows,
-            [3.0*inch, 1.2*inch, 2.5*inch],
-        ))
-        story.append(Spacer(1, 0.15*inch))
+        story.append(
+            make_table(
+                ["Feature", "SHAP Value", "Direction"],
+                shap_rows,
+                [3.0 * inch, 1.2 * inch, 2.5 * inch],
+            )
+        )
+        story.append(Spacer(1, 0.15 * inch))
 
         # What-If / Counterfactual table
         if counterfactual_results and counterfactual_results.get("scenarios"):
@@ -430,33 +538,37 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
             all other signals remain at their current values.
             """
             story.append(Paragraph(wif_text, small_style))
-            story.append(Spacer(1, 0.08*inch))
+            story.append(Spacer(1, 0.08 * inch))
 
-            base_3m  = counterfactual_results.get("base_prob_3m")
+            base_3m = counterfactual_results.get("base_prob_3m")
             base_12m = counterfactual_results.get("base_prob_12m", 0)
             wif_rows = []
             # Baseline row
             b3 = f"{base_3m*100:.1f}%" if base_3m is not None else "—"
             wif_rows.append(["Baseline (current)", b3, f"{base_12m*100:.1f}%", "—", "—"])
             for sc in counterfactual_results["scenarios"]:
-                p3  = sc.get("crash_prob_3m")
+                p3 = sc.get("crash_prob_3m")
                 p12 = sc.get("crash_prob_12m", 0)
-                d3  = sc.get("delta_3m")
+                d3 = sc.get("delta_3m")
                 d12 = sc.get("delta_12m", 0)
-                p3_str  = f"{p3*100:.1f}%"  if p3  is not None else "—"
-                d3_str  = f"{d3*100:+.1f}%" if d3  is not None else "—"
-                wif_rows.append([
-                    sc["label"],
-                    p3_str,
-                    f"{p12*100:.1f}%",
-                    d3_str,
-                    f"{d12*100:+.1f}%",
-                ])
-            story.append(make_table(
-                ["Scenario", "3M Crash", "12M Crash", "Δ 3M", "Δ 12M"],
-                wif_rows,
-                [2.5*inch, 1.0*inch, 1.0*inch, 0.9*inch, 0.9*inch],
-            ))
+                p3_str = f"{p3*100:.1f}%" if p3 is not None else "—"
+                d3_str = f"{d3*100:+.1f}%" if d3 is not None else "—"
+                wif_rows.append(
+                    [
+                        sc["label"],
+                        p3_str,
+                        f"{p12*100:.1f}%",
+                        d3_str,
+                        f"{d12*100:+.1f}%",
+                    ]
+                )
+            story.append(
+                make_table(
+                    ["Scenario", "3M Crash", "12M Crash", "Δ 3M", "Δ 12M"],
+                    wif_rows,
+                    [2.5 * inch, 1.0 * inch, 1.0 * inch, 0.9 * inch, 0.9 * inch],
+                )
+            )
         story.append(PageBreak())
 
     # ===== PAGE 6d: HISTORICAL STRESS TESTS =====
@@ -471,43 +583,58 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
         will vary with future conditions.
         """
         story.append(Paragraph(stress_text, body_style))
-        story.append(Spacer(1, 0.1*inch))
+        story.append(Spacer(1, 0.1 * inch))
         stress_fig = chart_stress_test(stress_results, current_price)
         if stress_fig is not None:
-            story.append(fig_to_image(stress_fig, height=3.2*inch))
-        story.append(Spacer(1, 0.1*inch))
+            story.append(fig_to_image(stress_fig, height=3.2 * inch))
+        story.append(Spacer(1, 0.1 * inch))
 
         stress_rows = []
         for name, info in stress_results.items():
-            stress_rows.append([
-                name,
-                f"{info['drop_pct']*100:.1f}%",
-                f"${info['trough_price']:,.0f}",
-                f"{info['drop_points']:+,.0f} pts",
-                f"{info['duration_days']} days",
-                f"{info['recovery_days'] // 30} months",
-            ])
-        story.append(make_table(
-            ["Crisis", "Drop %", "Trough Level", "Points Lost", "Crash Duration", "Recovery Time"],
-            stress_rows,
-            [1.8*inch, 0.7*inch, 1.1*inch, 1.1*inch, 1.1*inch, 1.0*inch],
-        ))
-        story.append(Spacer(1, 0.1*inch))
-        story.append(Paragraph(
-            "<i>Source: Shiller/Yale, NBER. Recovery = calendar days from trough to prior peak.</i>",
-            small_style,
-        ))
+            stress_rows.append(
+                [
+                    name,
+                    f"{info['drop_pct']*100:.1f}%",
+                    f"${info['trough_price']:,.0f}",
+                    f"{info['drop_points']:+,.0f} pts",
+                    f"{info['duration_days']} days",
+                    f"{info['recovery_days'] // 30} months",
+                ]
+            )
+        story.append(
+            make_table(
+                [
+                    "Crisis",
+                    "Drop %",
+                    "Trough Level",
+                    "Points Lost",
+                    "Crash Duration",
+                    "Recovery Time",
+                ],
+                stress_rows,
+                [1.8 * inch, 0.7 * inch, 1.1 * inch, 1.1 * inch, 1.1 * inch, 1.0 * inch],
+            )
+        )
+        story.append(Spacer(1, 0.1 * inch))
+        story.append(
+            Paragraph(
+                "<i>Source: Shiller/Yale, NBER. Recovery = calendar days from trough to prior peak.</i>",
+                small_style,
+            )
+        )
         story.append(PageBreak())
 
     # ===== PAGE 6e: VALIDATION & CROSS-CHECK =====
     if regime_validation is not None or external_validation is not None:
         story.append(Paragraph("VALIDATION &amp; CROSS-CHECK", heading_style))
-        story.append(Paragraph(
-            "Every engine output is cross-checked against independent sources. "
-            "Divergences from consensus are flagged — not to override the engine, "
-            "but to ensure users know when they are acting against market consensus.",
-            body_style,
-        ))
+        story.append(
+            Paragraph(
+                "Every engine output is cross-checked against independent sources. "
+                "Divergences from consensus are flagged — not to override the engine, "
+                "but to ensure users know when they are acting against market consensus.",
+                body_style,
+            )
+        )
         story.append(Spacer(1, 8))
 
         # Regime Confirmation Table
@@ -519,32 +646,46 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
                 return "PASS" if val else "FAIL"
 
             regime_rows = [
-                ["200-day SMA", _pass_fail(regime_validation.price_confirmed),
-                 "Price below 200d MA confirms bearish structure" if regime_validation.price_confirmed
-                 else "Price above 200d MA — bear not confirmed by price"],
-                ["Market Breadth", _pass_fail(regime_validation.breadth_confirmed),
-                 "Majority of sectors declining" if regime_validation.breadth_confirmed
-                 else "Breadth divergence — insufficient sectors declining"],
-                ["Consensus", _pass_fail(regime_validation.consensus_aligned),
-                 "Institutional forecasts align" if regime_validation.consensus_aligned
-                 else "Institutional forecasts diverge from engine"],
+                [
+                    "200-day SMA",
+                    _pass_fail(regime_validation.price_confirmed),
+                    "Price below 200d MA confirms bearish structure"
+                    if regime_validation.price_confirmed
+                    else "Price above 200d MA — bear not confirmed by price",
+                ],
+                [
+                    "Market Breadth",
+                    _pass_fail(regime_validation.breadth_confirmed),
+                    "Majority of sectors declining"
+                    if regime_validation.breadth_confirmed
+                    else "Breadth divergence — insufficient sectors declining",
+                ],
+                [
+                    "Consensus",
+                    _pass_fail(regime_validation.consensus_aligned),
+                    "Institutional forecasts align"
+                    if regime_validation.consensus_aligned
+                    else "Institutional forecasts diverge from engine",
+                ],
             ]
             regime_table = make_table(
                 ["Check", "Status", "Detail"],
                 regime_rows,
-                col_widths=[1.2*inch, 0.8*inch, 4.5*inch],
+                col_widths=[1.2 * inch, 0.8 * inch, 4.5 * inch],
             )
             story.append(regime_table)
             story.append(Spacer(1, 4))
 
             conf_color = {"HIGH": "#00CC00", "MEDIUM": "#FFAA00", "LOW": "#FF4444"}
             color = conf_color.get(regime_validation.confidence, "#999999")
-            story.append(Paragraph(
-                f"<b>Regime:</b> {regime_validation.regime} — "
-                f"<font color='{color}'><b>{regime_validation.confidence} CONFIDENCE</b></font> "
-                f"({'CONFIRMED' if regime_validation.confirmed else 'UNCONFIRMED'})",
-                body_style,
-            ))
+            story.append(
+                Paragraph(
+                    f"<b>Regime:</b> {regime_validation.regime} — "
+                    f"<font color='{color}'><b>{regime_validation.confidence} CONFIDENCE</b></font> "
+                    f"({'CONFIRMED' if regime_validation.confirmed else 'UNCONFIRMED'})",
+                    body_style,
+                )
+            )
             story.append(Spacer(1, 12))
 
         # External Signals Dashboard
@@ -553,42 +694,63 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
             story.append(Spacer(1, 4))
 
             signal_rows = [
-                ["Leading Economic Index (LEI)", external_validation.lei_signal,
-                 "Consecutive declines precede recessions"],
-                ["SLOOS (Bank Lending)", external_validation.sloos_signal,
-                 "Tightening standards precede credit stress"],
-                ["Fed Funds Direction", external_validation.fed_signal,
-                 "Rate path signals monetary policy stance"],
-                ["Consumer Sentiment", external_validation.sentiment_signal,
-                 "Extreme fear is historically contrarian-bullish"],
-                ["IMF GDP Forecast", external_validation.imf_signal,
-                 "Global growth outlook"],
+                [
+                    "Leading Economic Index (LEI)",
+                    external_validation.lei_signal,
+                    "Consecutive declines precede recessions",
+                ],
+                [
+                    "SLOOS (Bank Lending)",
+                    external_validation.sloos_signal,
+                    "Tightening standards precede credit stress",
+                ],
+                [
+                    "Fed Funds Direction",
+                    external_validation.fed_signal,
+                    "Rate path signals monetary policy stance",
+                ],
+                [
+                    "Consumer Sentiment",
+                    external_validation.sentiment_signal,
+                    "Extreme fear is historically contrarian-bullish",
+                ],
+                ["IMF GDP Forecast", external_validation.imf_signal, "Global growth outlook"],
             ]
             signal_table = make_table(
                 ["Source", "Signal", "Interpretation"],
                 signal_rows,
-                col_widths=[2.0*inch, 1.2*inch, 3.3*inch],
+                col_widths=[2.0 * inch, 1.2 * inch, 3.3 * inch],
             )
             story.append(signal_table)
             story.append(Spacer(1, 8))
 
             agreement_pct = external_validation.engine_agreement * 100
-            agr_color = "#00CC00" if agreement_pct >= 60 else "#FFAA00" if agreement_pct >= 40 else "#FF4444"
-            story.append(Paragraph(
-                f"<b>Engine-External Agreement:</b> "
-                f"<font color='{agr_color}'><b>{agreement_pct:.0f}%</b></font> | "
-                f"<b>Consensus Direction:</b> {external_validation.consensus_direction}",
-                body_style,
-            ))
+            agr_color = (
+                "#00CC00"
+                if agreement_pct >= 60
+                else "#FFAA00"
+                if agreement_pct >= 40
+                else "#FF4444"
+            )
+            story.append(
+                Paragraph(
+                    f"<b>Engine-External Agreement:</b> "
+                    f"<font color='{agr_color}'><b>{agreement_pct:.0f}%</b></font> | "
+                    f"<b>Consensus Direction:</b> {external_validation.consensus_direction}",
+                    body_style,
+                )
+            )
 
             if external_validation.divergence_alerts:
                 story.append(Spacer(1, 8))
                 story.append(Paragraph("<b>Divergence Alerts:</b>", body_style))
                 for alert in external_validation.divergence_alerts:
-                    story.append(Paragraph(
-                        f"<font color='#FF4444'>&#x26A0;</font> {alert}",
-                        body_style,
-                    ))
+                    story.append(
+                        Paragraph(
+                            f"<font color='#FF4444'>&#x26A0;</font> {alert}",
+                            body_style,
+                        )
+                    )
 
         # Advanced Metrics (from backtest)
         adv = bt_results.attrs.get("advanced_metrics") if len(bt_results) > 0 else None
@@ -600,50 +762,60 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
             metric_rows = []
             if "lead_time" in adv:
                 lt = adv["lead_time"]
-                metric_rows.append([
-                    "Lead Time Accuracy",
-                    f"{lt['mean_lead_days']:.0f} days",
-                    "> 30 days",
-                    "OK" if lt['mean_lead_days'] > 30 else "WARN",
-                ])
+                metric_rows.append(
+                    [
+                        "Lead Time Accuracy",
+                        f"{lt['mean_lead_days']:.0f} days",
+                        "> 30 days",
+                        "OK" if lt["mean_lead_days"] > 30 else "WARN",
+                    ]
+                )
             if "false_alarm" in adv:
                 fa = adv["false_alarm"]
-                metric_rows.append([
-                    "False Alarm Rate",
-                    f"{fa['rate']*100:.0f}%",
-                    "< 30%",
-                    "OK" if fa['rate'] < 0.30 else "WARN",
-                ])
+                metric_rows.append(
+                    [
+                        "False Alarm Rate",
+                        f"{fa['rate']*100:.0f}%",
+                        "< 30%",
+                        "OK" if fa["rate"] < 0.30 else "WARN",
+                    ]
+                )
             if "missed_crash" in adv:
                 mc = adv["missed_crash"]
-                metric_rows.append([
-                    "Missed Crash Rate",
-                    f"{mc['rate']*100:.0f}%",
-                    "< 20%",
-                    "OK" if mc['rate'] < 0.20 else "WARN",
-                ])
+                metric_rows.append(
+                    [
+                        "Missed Crash Rate",
+                        f"{mc['rate']*100:.0f}%",
+                        "< 20%",
+                        "OK" if mc["rate"] < 0.20 else "WARN",
+                    ]
+                )
             if "signal_drawdown" in adv:
                 sd = adv["signal_drawdown"]
-                metric_rows.append([
-                    "Signal Max Drawdown",
-                    f"{sd['max_drawdown']*100:.1f}%",
-                    "< 25%",
-                    "OK" if sd['max_drawdown'] < 0.25 else "WARN",
-                ])
+                metric_rows.append(
+                    [
+                        "Signal Max Drawdown",
+                        f"{sd['max_drawdown']*100:.1f}%",
+                        "< 25%",
+                        "OK" if sd["max_drawdown"] < 0.25 else "WARN",
+                    ]
+                )
             if "directional_vs_consensus" in adv:
                 dvc = adv["directional_vs_consensus"]
-                metric_rows.append([
-                    "Dir. Accuracy vs Consensus",
-                    f"{dvc['engine_correct_rate']*100:.0f}%",
-                    "> 55%",
-                    "OK" if dvc['engine_correct_rate'] > 0.55 else "WARN",
-                ])
+                metric_rows.append(
+                    [
+                        "Dir. Accuracy vs Consensus",
+                        f"{dvc['engine_correct_rate']*100:.0f}%",
+                        "> 55%",
+                        "OK" if dvc["engine_correct_rate"] > 0.55 else "WARN",
+                    ]
+                )
 
             if metric_rows:
                 metrics_table = make_table(
                     ["Metric", "Value", "Target", "Status"],
                     metric_rows,
-                    col_widths=[2.2*inch, 1.2*inch, 1.2*inch, 0.8*inch],
+                    col_widths=[2.2 * inch, 1.2 * inch, 1.2 * inch, 0.8 * inch],
                 )
                 story.append(metrics_table)
 
@@ -657,35 +829,35 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     credibility and ensures our model is not producing delusional estimates.
     """
     story.append(Paragraph(inst_text, body_style))
-    story.append(Spacer(1, 0.1*inch))
+    story.append(Spacer(1, 0.1 * inch))
 
     inst_rows = []
-    model_annual = mc_results['annual_return_pct']
+    model_annual = mc_results["annual_return_pct"]
     for name, info in config["institutional_benchmarks"].items():
         if not isinstance(info, dict) or "annual" not in info:
             continue
-        implied_5y = current_price * (1 + info['annual']) ** 5
-        variance = ((mc_results['final_mean'] / implied_5y) - 1) * 100
-        inst_rows.append([
-            name.replace('_', ' '),
-            f"{info['annual']*100:.1f}%",
-            info['horizon'],
-            f"${implied_5y:,.0f}",
-            f"{variance:+.1f}%"
-        ])
-    inst_rows.append([
-        'V7.0 Model',
-        f"{model_annual:.1f}%",
-        '5Y',
-        f"${mc_results['final_mean']:,.0f}",
-        '—'
-    ])
+        implied_5y = current_price * (1 + info["annual"]) ** 5
+        variance = ((mc_results["final_mean"] / implied_5y) - 1) * 100
+        inst_rows.append(
+            [
+                name.replace("_", " "),
+                f"{info['annual']*100:.1f}%",
+                info["horizon"],
+                f"${implied_5y:,.0f}",
+                f"{variance:+.1f}%",
+            ]
+        )
+    inst_rows.append(
+        ["V7.0 Model", f"{model_annual:.1f}%", "5Y", f"${mc_results['final_mean']:,.0f}", "—"]
+    )
 
-    story.append(make_table(
-        ['Institution', 'Annual Return', 'Horizon', '5Y Implied Target', 'Model Variance'],
-        inst_rows,
-        [1.5*inch, 1.2*inch, 0.8*inch, 1.3*inch, 1.2*inch]
-    ))
+    story.append(
+        make_table(
+            ["Institution", "Annual Return", "Horizon", "5Y Implied Target", "Model Variance"],
+            inst_rows,
+            [1.5 * inch, 1.2 * inch, 0.8 * inch, 1.3 * inch, 1.2 * inch],
+        )
+    )
 
     inst_note = f"""<br/>
     <b>Analysis:</b> Our model's {model_annual:.1f}% annualized projection places it within the
@@ -704,26 +876,31 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
     volatility. Sectors outperforming the S&amp;P 500 projection are highlighted.
     """
     story.append(Paragraph(sect_text, body_style))
-    story.append(Spacer(1, 0.1*inch))
+    story.append(Spacer(1, 0.1 * inch))
 
     if sector_results:
         sect_rows = []
-        for name, info in sorted(sector_results.items(),
-                                  key=lambda x: x[1]['expected_return'], reverse=True):
-            sect_rows.append([
-                name,
-                f"{info['expected_return']:+.1f}%",
-                f"{info['median_return']:+.1f}%",
-                f"{info['volatility']:.0f}%",
-                f"{info['sharpe']:.2f}"
-            ])
-        story.append(make_table(
-            ['Sector', 'Expected 5Y %', 'Median 5Y %', 'Volatility', 'Sharpe'],
-            sect_rows,
-            [1.5*inch, 1.2*inch, 1.2*inch, 1*inch, 0.8*inch]
-        ))
-        story.append(Spacer(1, 0.15*inch))
-        story.append(fig_to_image(chart_sectors(sector_results, mc_results['total_return_pct'])))
+        for name, info in sorted(
+            sector_results.items(), key=lambda x: x[1]["expected_return"], reverse=True
+        ):
+            sect_rows.append(
+                [
+                    name,
+                    f"{info['expected_return']:+.1f}%",
+                    f"{info['median_return']:+.1f}%",
+                    f"{info['volatility']:.0f}%",
+                    f"{info['sharpe']:.2f}",
+                ]
+            )
+        story.append(
+            make_table(
+                ["Sector", "Expected 5Y %", "Median 5Y %", "Volatility", "Sharpe"],
+                sect_rows,
+                [1.5 * inch, 1.2 * inch, 1.2 * inch, 1 * inch, 0.8 * inch],
+            )
+        )
+        story.append(Spacer(1, 0.15 * inch))
+        story.append(fig_to_image(chart_sectors(sector_results, mc_results["total_return_pct"])))
 
     story.append(PageBreak())
 
@@ -739,31 +916,44 @@ def generate_report(data, mc_results, bt_results, sector_results, stock_results,
         jump-diffusion process as the S&amp;P 500 model.
         """
         story.append(Paragraph(stock_text, body_style))
-        story.append(Spacer(1, 0.1*inch))
+        story.append(Spacer(1, 0.1 * inch))
 
         stock_rows = []
-        for tick, info in sorted(stock_results.items(),
-                                  key=lambda x: x[1]['expected_return'], reverse=True):
-            mc_str = f"${info['market_cap']/1e9:.0f}B" if info['market_cap'] else 'N/A'
-            at_str = f"${info['analyst_target']:.0f}" if info['analyst_target'] else '—'
-            stock_rows.append([
-                tick,
-                f"${info['current_price']:.0f}",
-                info['cap_tier'].title(),
-                f"{info['expected_return']:+.1f}%",
-                f"{info['prob_loss_5y']:.0f}%",
-                f"{info['avg_max_drawdown']:.0f}%",
-                f"{info['sharpe']:.2f}",
-            ])
+        for tick, info in sorted(
+            stock_results.items(), key=lambda x: x[1]["expected_return"], reverse=True
+        ):
+            f"${info['market_cap']/1e9:.0f}B" if info["market_cap"] else "N/A"
+            f"${info['analyst_target']:.0f}" if info["analyst_target"] else "—"
+            stock_rows.append(
+                [
+                    tick,
+                    f"${info['current_price']:.0f}",
+                    info["cap_tier"].title(),
+                    f"{info['expected_return']:+.1f}%",
+                    f"{info['prob_loss_5y']:.0f}%",
+                    f"{info['avg_max_drawdown']:.0f}%",
+                    f"{info['sharpe']:.2f}",
+                ]
+            )
 
-        story.append(make_table(
-            ['Ticker', 'Price', 'Cap Tier', 'Exp 5Y %', 'P(Loss)', 'Max DD', 'Sharpe'],
-            stock_rows,
-            [0.7 * inch, 0.8*inch, 0.8*inch, 0.9*inch, 0.8*inch, 0.8*inch, 0.7 * inch]
-        ))
-        story.append(Spacer(1, 0.15*inch))
+        story.append(
+            make_table(
+                ["Ticker", "Price", "Cap Tier", "Exp 5Y %", "P(Loss)", "Max DD", "Sharpe"],
+                stock_rows,
+                [
+                    0.7 * inch,
+                    0.8 * inch,
+                    0.8 * inch,
+                    0.9 * inch,
+                    0.8 * inch,
+                    0.8 * inch,
+                    0.7 * inch,
+                ],
+            )
+        )
+        story.append(Spacer(1, 0.15 * inch))
 
-        stock_chart = chart_stocks(stock_results, mc_results['total_return_pct'])
+        stock_chart = chart_stocks(stock_results, mc_results["total_return_pct"])
         if stock_chart is not None:
             story.append(fig_to_image(stock_chart))
 
@@ -871,8 +1061,15 @@ def _chart_crash_timing(crash_timing_results):
     # Add value labels on bars
     for bar, p in zip(bars, probs):
         if p > 0.02:
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
-                    f"{p*100:.1f}%", ha="center", va="bottom", fontsize=9, fontweight="bold")
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.5,
+                f"{p*100:.1f}%",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                fontweight="bold",
+            )
 
     ax.set_ylabel("Crash Probability (%)", fontsize=9)
     ax.set_title("Crash Probability by 3-Month Window", fontsize=11, fontweight="bold")
@@ -889,5 +1086,3 @@ def _chart_crash_timing(crash_timing_results):
 
     fig.tight_layout()
     return fig
-
-
