@@ -9,7 +9,8 @@
       "Bash(xargs:*)",
       "Bash(.venv/Scripts/pip install:*)",
       "Bash(.venv/Scripts/pre-commit install:*)",
-      "Bash(.venv/Scripts/ruff check:*)"
+      "Bash(.venv/Scripts/ruff check:*)",
+      "Bash(tasklist:*)"
     ]
   }
 }

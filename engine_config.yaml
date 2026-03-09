@@ -64,7 +64,7 @@ data:
     fed_funds: FEDFUNDS               # Federal Funds Rate
     consumer_sentiment: UMCSENT       # U of Michigan Consumer Sentiment
     vix_fred: VIXCLS                  # VIX (FRED version, for longer history)
-    ted_spread: TEDRATE               # Banking system stress (3M LIBOR - 3M T-Bill)
+    # ted_spread: TEDRATE              # DISCONTINUED Jan 2022 (LIBOR ceased). Frozen at 0.09.
     hy_oas: BAMLH0A0HYM2             # High Yield OAS spread (direct credit stress)
     ig_oas: BAMLC0A0CM               # Investment Grade OAS spread
     gpr_world: GPRH                   # Geopolitical Risk Index (threats)
@@ -125,7 +125,7 @@ validation:
 # ── SIMULATION SETTINGS ─────────────────────────────────────────────────────────────
 simulation:
   forecast_years: 5                   # Projection horizon
-  num_simulations: 500                # Monte Carlo paths (TEMP: reduced for fast testing, restore to 10000)
+  num_simulations: 10000              # Monte Carlo paths
   trading_days_per_year: 252          # Standard trading days
 
   # Jump-diffusion parameters
@@ -174,10 +174,10 @@ simulation:
 
 # ── BACKTESTING SETTINGS ────────────────────────────────────────────────────────────
 backtest:
-  step_months: 12                     # Predict every N months (TEMP: was 3, restore for accuracy)
+  step_months: 3                      # Predict every 3 months (~100 predictions)
   lookback_years: 10                  # History used per prediction point
   forward_days: 252                   # Predict 1 year ahead
-  simulations_per_point: 200          # Sims per backtest point (TEMP: was 1000, restore for accuracy)
+  simulations_per_point: 1000         # Sims per backtest point
   transaction_cost: 0.001             # 0.1% per trade
 
 
@@ -297,10 +297,10 @@ institutional_benchmarks:
   Schwab:           { annual: 0.059, horizon: "10Y", note: "Long-term capital market expectations" }
   BlackRock:        { annual: 0.052, horizon: "10Y", note: "Capital market assumptions" }
   "Morgan Stanley": { annual: 0.080, horizon: "5Y",  note: "2026 bull case estimate" }
-  "Goldman Sachs":  { annual: 0.030, horizon: "10Y", note: "2024 10-yr forecast (low due to concentration)" }
-  "J.P. Morgan":    { annual: 0.061, horizon: "10Y", note: "Long-term capital market assumptions" }
+  "Goldman Sachs":  { annual: 0.065, horizon: "10Y", note: "Nov 2025 update — raised from 3% to 6.5%" }
+  "J.P. Morgan":    { annual: 0.067, horizon: "10Y", note: "2026 LTCMA — U.S. large cap" }
   AQR:              { annual: 0.042, horizon: "10Y", note: "Expected real + inflation" }
-  "Research Affiliates": { annual: 0.048, horizon: "10Y", note: "RAFI expected return" }
+  "Research Affiliates": { annual: 0.031, horizon: "10Y", note: "RAFI expected real return (most bearish)" }
 
   # Adjustment: slight upward for 5Y vs 10Y horizon
   horizon_adjustment: 1.05

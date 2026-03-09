@@ -1024,8 +1024,8 @@ def chart_credit_stress(fred_data):
 
     panels = [
         ("ted_spread", "TED Spread (%)", "Interbank Stress"),
-        ("hy_oas", "HY OAS (bps)", "High-Yield Spread"),
-        ("ig_oas", "IG OAS (bps)", "Invest.-Grade Spread"),
+        ("hy_oas", "HY OAS (%)", "High-Yield Spread"),
+        ("ig_oas", "IG OAS (%)", "Invest.-Grade Spread"),
     ]
 
     available = [

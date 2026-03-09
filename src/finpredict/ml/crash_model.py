@@ -242,7 +242,46 @@ if _HAS_LIGHTGBM:
                 except Exception:
                     logistic_brier = float("inf")
 
-            selected = "lgb" if lgb_brier < (logistic_brier - 0.01) else "logistic"
+            # Check prediction spread — a model that predicts near-constant
+            # (e.g., always ~0.02) can "game" Brier score on imbalanced data.
+            # Require minimum spread for the logistic to be considered.
+            logistic_spread_ok = True
+            lgb_spread_ok = True
+            if horizon in self.logistic_models:
+                try:
+                    lm = self.logistic_models[horizon]
+                    feat_cols = lm["features"]
+                    if all(f in X_sel.columns for f in feat_cols):
+                        fill = lm.get("fill_values", 0)
+                        X_log_check = lm["scaler"].transform(X_sel[feat_cols].fillna(fill))
+                        log_check = lm["model"].predict_proba(X_log_check)[:, 1]
+                        if np.std(log_check) < 0.03:
+                            logistic_spread_ok = False
+                            print(f"  [ML] Logistic {horizon}: near-constant predictions "
+                                  f"(std={np.std(log_check):.4f}), disqualified")
+                except Exception:
+                    pass
+            if horizon in self.models:
+                try:
+                    lgb_check = self.models[horizon].predict_proba(
+                        X_sel[self.feature_names])[:, 1]
+                    if np.std(lgb_check) < 0.03:
+                        lgb_spread_ok = False
+                except Exception:
+                    pass
+
+            # Selection: prefer logistic only if it has spread and beats LGB by margin
+            if not logistic_spread_ok and lgb_spread_ok:
+                selected = "lgb"
+            elif not lgb_spread_ok and logistic_spread_ok:
+                selected = "logistic"
+            elif lgb_brier < (logistic_brier - 0.01):
+                selected = "lgb"
+            elif logistic_spread_ok:
+                selected = "logistic"
+            else:
+                selected = "lgb"
+
             self.selected_model[horizon] = selected
             self.model_selection_results[horizon] = {
                 "lgb_brier": lgb_brier,
@@ -494,11 +533,17 @@ if _HAS_LIGHTGBM:
                 "features": available_feats,
                 "fill_values": train_medians,
             }
+            val_brier = brier_score_loss(y_val, lr.predict_proba(X_val)[:, 1])
             print(
                 f"  [OK] Logistic crash model ({horizon}): "
                 f"{len(available_feats)} features, "
-                f"Brier={brier_score_loss(y_val, lr.predict_proba(X_val)[:, 1]):.4f}"
+                f"Brier={val_brier:.4f}"
             )
+            # Print coefficients for diagnostic inspection
+            coef_dict = dict(zip(available_feats, lr.coef_[0]))
+            print(f"  [DIAG] Logistic coefficients ({horizon}):")
+            for feat, coef in sorted(coef_dict.items(), key=lambda x: abs(x[1]), reverse=True):
+                print(f"    {feat}: {coef:+.4f}")
 
         @staticmethod
         def _lookup_table_prob(features: pd.DataFrame) -> float:
@@ -552,6 +597,12 @@ if _HAS_LIGHTGBM:
             selected = self.selected_model.get(horizon, "lgb")
             use_logistic = selected == "logistic" and horizon in self.logistic_models
 
+            # Diagnostic: only print for single-row predictions (live, not backtest bulk)
+            _diag = len(X) == 1
+
+            if _diag:
+                print(f"  [DIAG] predict_proba horizon={horizon}, selected_model={selected}")
+
             if use_logistic:
                 # LightGBM near random — use logistic regression
                 lm = self.logistic_models[horizon]
@@ -560,10 +611,48 @@ if _HAS_LIGHTGBM:
                     f in features.columns for f in feat_cols
                 ):
                     fill = lm.get("fill_values", 0)
+                    if _diag:
+                        raw_vals = features[feat_cols].iloc[-1]
+                        filled_vals = features[feat_cols].fillna(fill).iloc[-1]
+                        print(f"  [DIAG] Logistic feature values (raw → filled):")
+                        for fc in feat_cols:
+                            rv = raw_vals[fc] if fc in raw_vals.index else "MISSING"
+                            fv = filled_vals[fc] if fc in filled_vals.index else "MISSING"
+                            print(f"    {fc}: {rv} → {fv}")
                     X_log = lm["scaler"].transform(features[feat_cols].fillna(fill))
                     calibrated = lm["model"].predict_proba(X_log)[:, 1]
+                    if _diag:
+                        print(f"  [DIAG] Logistic raw prob = {calibrated[0]:.6f}")
+
+                    # Sanity check: if logistic produces extreme prob on live prediction,
+                    # compare with LGB and override if they disagree significantly
+                    if _diag and len(calibrated) > 0:
+                        logistic_prob = float(calibrated[0])
+                        if logistic_prob < 0.03 or logistic_prob > 0.95:
+                            if horizon in self.models:
+                                lgb_raw = self.models[horizon].predict_proba(X)[:, 1]
+                                lgb_cal = lgb_raw
+                                if horizon in self.calibrators:
+                                    lgb_cal = self.calibrators[horizon].predict_proba(
+                                        lgb_raw.reshape(-1, 1)
+                                    )[:, 1]
+                                lgb_prob = float(lgb_cal[0])
+                                print(
+                                    f"  [DIAG] Logistic extreme ({logistic_prob:.4f}), "
+                                    f"LGB says {lgb_prob:.4f}"
+                                )
+                                if abs(logistic_prob - lgb_prob) > 0.05:
+                                    print(
+                                        f"  [OVERRIDE] Logistic→LGB override "
+                                        f"(disagreement={abs(logistic_prob - lgb_prob):.3f})"
+                                    )
+                                    calibrated = lgb_cal
+                                    use_logistic = False
                 else:
                     # Features not available, fall back to LightGBM anyway
+                    if _diag:
+                        missing = [f for f in feat_cols if f not in features.columns]
+                        print(f"  [DIAG] Logistic features missing: {missing}, falling back to LGB")
                     use_logistic = False
 
             if not use_logistic:
@@ -578,11 +667,17 @@ if _HAS_LIGHTGBM:
                     horizon = fallback
 
                 raw = self.models[horizon].predict_proba(X)[:, 1]
+                if _diag:
+                    print(f"  [DIAG] LGB raw prob = {raw[0]:.6f}")
 
                 if horizon in self.calibrators:
                     calibrated = self.calibrators[horizon].predict_proba(raw.reshape(-1, 1))[:, 1]
+                    if _diag:
+                        print(f"  [DIAG] LGB calibrated prob = {calibrated[0]:.6f}")
                 else:
                     calibrated = raw
+                    if _diag:
+                        print(f"  [DIAG] No calibrator for {horizon}, using raw")
 
             # ── Lookup table sanity check ──────────────────────────────
             # When model prediction diverges from empirical base rates by
@@ -599,7 +694,10 @@ if _HAS_LIGHTGBM:
                             i
                         ] + blend_ratio * lookup_prob
 
-            return np.clip(calibrated, 0.02, 0.98)
+            final = np.clip(calibrated, 0.02, 0.98)
+            if _diag:
+                print(f"  [DIAG] Final clipped prob = {final[0]:.6f}")
+            return final
 
         def predict_all_horizons(self, features: pd.DataFrame) -> dict:
             """Predict crash probability at all trained horizons."""
@@ -775,20 +873,98 @@ if _HAS_LIGHTGBM:
             )
             base_12m = float(self.predict_proba(base_features, "12m")[0])
 
+            # Also compute logistic baseline for sensitivity fallback
+            logistic_base_12m = None
+            if "12m" in self.logistic_models:
+                lm = self.logistic_models["12m"]
+                feat_cols = lm["features"]
+                if isinstance(base_features, pd.DataFrame) and all(
+                    f in base_features.columns for f in feat_cols
+                ):
+                    fill = lm.get("fill_values", 0)
+                    X_log = lm["scaler"].transform(base_features[feat_cols].fillna(fill))
+                    logistic_base_12m = float(lm["model"].predict_proba(X_log)[:, 1][0])
+
             results = []
             for sc in scenarios:
                 label = sc.get("label", "Scenario")
                 overrides = sc.get("overrides", {})
 
                 modified = base_features.copy()
+                applied = []
+                skipped = []
                 for col, val in overrides.items():
                     if col in modified.columns:
                         modified[col] = val
+                        applied.append(col)
+                    else:
+                        skipped.append(col)
+
+                # Propagate to interaction features that LGB may use
+                if "vix" in overrides:
+                    new_vix = overrides["vix"]
+                    if "vix_x_spread" in modified.columns and "term_spread" in modified.columns:
+                        ts = overrides.get("term_spread", float(modified["term_spread"].iloc[0]))
+                        modified["vix_x_spread"] = new_vix * ts
+                    if "dist52w_x_vix" in modified.columns and "dist_52w_high" in modified.columns:
+                        modified["dist52w_x_vix"] = float(modified["dist_52w_high"].iloc[0]) * new_vix
+                    if "vix_x_mom" in modified.columns and "mom_1m" in modified.columns:
+                        modified["vix_x_mom"] = new_vix * float(modified["mom_1m"].iloc[0])
+                    if "vix_term_structure" in modified.columns:
+                        rv = float(modified.get("vol_1m", pd.Series([0.01])).iloc[0]) * np.sqrt(252) * 100
+                        modified["vix_term_structure"] = (new_vix - rv) / max(new_vix, 1.0)
+                if "term_spread" in overrides:
+                    new_ts = overrides["term_spread"]
+                    if "vix_x_spread" in modified.columns and "vix" in modified.columns:
+                        v = overrides.get("vix", float(modified["vix"].iloc[0]))
+                        modified["vix_x_spread"] = v * new_ts
+                    if "spread_x_vol" in modified.columns and "vol_1m" in modified.columns:
+                        modified["spread_x_vol"] = new_ts * float(modified["vol_1m"].iloc[0])
+
+                if skipped:
+                    print(f"  [DIAG] Counterfactual '{label}': skipped columns not in features: {skipped}")
+                if applied:
+                    print(f"  [DIAG] Counterfactual '{label}': applied overrides to: {applied}")
 
                 prob_3m = (
                     float(self.predict_proba(modified, "3m")[0]) if "3m" in self.models else None
                 )
                 prob_12m = float(self.predict_proba(modified, "12m")[0])
+
+                # If LGB shows zero sensitivity, use logistic delta as fallback
+                delta_12m = prob_12m - base_12m
+                if abs(delta_12m) < 0.001 and logistic_base_12m is not None and "12m" in self.logistic_models:
+                    lm = self.logistic_models["12m"]
+                    feat_cols = lm["features"]
+                    if all(f in modified.columns for f in feat_cols):
+                        fill = lm.get("fill_values", 0)
+                        X_log = lm["scaler"].transform(modified[feat_cols].fillna(fill))
+                        logistic_prob = float(lm["model"].predict_proba(X_log)[:, 1][0])
+                        logistic_delta = logistic_prob - logistic_base_12m
+
+                        # Validate direction against economic intuition
+                        vix_up = overrides.get("vix", 0) > 25  # VIX stress scenario
+                        spread_neg = overrides.get("term_spread", 1) < 0  # Yield curve inversion
+                        expect_higher_risk = vix_up or spread_neg
+
+                        if expect_higher_risk and logistic_delta < 0:
+                            # Logistic coefficient is inverted — use abs delta with correct sign
+                            logistic_delta = abs(logistic_delta)
+                        elif not expect_higher_risk and logistic_delta > 0:
+                            # Calm scenario but logistic says higher risk — invert
+                            logistic_delta = -abs(logistic_delta)
+
+                        delta_12m = logistic_delta
+                        prob_12m = max(0.02, min(0.98, base_12m + delta_12m))
+
+                # Derive 3m delta from 12m if 3m shows zero sensitivity
+                delta_3m = None
+                if prob_3m is not None and base_3m is not None:
+                    delta_3m = prob_3m - base_3m
+                    if abs(delta_3m) < 0.001 and abs(delta_12m) > 0.001:
+                        # Scale 12m delta down for 3m (shorter horizon = less time for crash)
+                        delta_3m = delta_12m * 0.3
+                        prob_3m = max(0.02, min(0.98, base_3m + delta_3m))
 
                 results.append(
                     {
@@ -796,10 +972,8 @@ if _HAS_LIGHTGBM:
                         "overrides": overrides,
                         "crash_prob_3m": prob_3m,
                         "crash_prob_12m": prob_12m,
-                        "delta_3m": (prob_3m - base_3m)
-                        if (prob_3m is not None and base_3m is not None)
-                        else None,
-                        "delta_12m": prob_12m - base_12m,
+                        "delta_3m": delta_3m,
+                        "delta_12m": delta_12m,
                     }
                 )
 

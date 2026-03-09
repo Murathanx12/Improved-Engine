@@ -86,6 +86,8 @@ def run_backtest(
         data.index[-1] - pd.Timedelta(days=forward_days + 30),
         freq=f'{bt_cfg["step_months"]}MS',
     )
+    print(f"  [BACKTEST] step_months={bt_cfg['step_months']}, "
+          f"pred_dates={len(pred_dates)} from {pred_dates[0].date()} to {pred_dates[-1].date()}")
 
     # ── Pre-compute features and targets ──────────────────────────
     print("  [ML] Building feature matrix with FRED time series...")

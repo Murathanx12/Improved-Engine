@@ -214,6 +214,23 @@ def main():
             )
             current_regime = "Neutral"
         current_vix = float(data["VIX"].iloc[-1]) if "VIX" in data.columns else 20.0
+
+        # Real-time crisis override: VIX elevated + active drawdown → Bear/Volatile
+        if current_vix > 25 and current_regime in ("Bull", "Neutral"):
+            recent_high = float(data["SP500"].iloc[-63:].max())
+            drawdown_from_recent = (current_price - recent_high) / recent_high
+            if drawdown_from_recent < -0.03:
+                print(
+                    f"  [OVERRIDE] VIX={current_vix:.0f} + drawdown={drawdown_from_recent * 100:.1f}%"
+                    f" → upgrading regime from {current_regime} to Bear"
+                )
+                current_regime = "Bear"
+            elif current_vix > 28:
+                print(
+                    f"  [OVERRIDE] VIX={current_vix:.0f} alone signals stress"
+                    f" → upgrading regime from {current_regime} to Volatile"
+                )
+                current_regime = "Volatile"
         yield_curve = (
             float(data["T10Y"].iloc[-1] - data["T3M"].iloc[-1])
             if "T10Y" in data.columns and "T3M" in data.columns
@@ -360,6 +377,19 @@ def main():
                     preds_to_avg.append(cox_crash_12m)
                 ml_crash_prob = float(np.mean(preds_to_avg))
 
+            # Ensemble diagnostic
+            def _fmt(v):
+                return f"{v:.3f}" if v is not None else "N/A"
+
+            print(
+                f"  [ENSEMBLE] lgb={_fmt(lgb_crash_12m)}, xgb={_fmt(xgb_crash_12m)}, "
+                f"lstm={_fmt(lstm_crash_12m)}, tcn={_fmt(tcn_crash_12m)}, cox={_fmt(cox_crash_12m)}"
+            )
+            print(
+                f"  [ENSEMBLE] ml_crash_prob={ml_crash_prob:.3f} "
+                f"({'meta-stacker' if meta_stacker and meta_stacker.is_trained else 'simple avg'})"
+            )
+
             # Crash timing — which 3-month window is highest risk
             if crash_timing_model and crash_timing_model.is_trained:
                 crash_timing_results = crash_timing_model.predict_window(
@@ -466,14 +496,58 @@ def main():
                 shap_contributions = None
 
             # Counterfactual / what-if sensitivity analysis
+            # Derive VIX z-score stats from feature matrix for realistic overrides
+            _vix_mean = current_features["vix"].rolling(252).mean().iloc[-1] if "vix" in current_features.columns else 20.0
+            _vix_std = current_features["vix"].rolling(252).std().iloc[-1] if "vix" in current_features.columns else 5.0
+            _vix_std = max(_vix_std, 1.0)  # prevent division by zero
+            _cur_vix_val = float(current_row["vix"].iloc[0]) if "vix" in current_row.columns else 20.0
+
+            # Diagnostic: print feature columns relevant to counterfactual
+            vix_cols = [c for c in current_features.columns if "vix" in c.lower()]
+            spread_cols = [c for c in current_features.columns if "spread" in c.lower() or "yield" in c.lower()]
+            print(f"\n  [DIAG] Counterfactual VIX columns: {vix_cols[:10]}")
+            print(f"  [DIAG] Counterfactual spread columns: {spread_cols[:10]}")
+            print(f"  [DIAG] Current vix={_cur_vix_val:.1f}, vix_mean={_vix_mean:.1f}, vix_std={_vix_std:.1f}")
+            if "term_spread" in current_row.columns:
+                print(f"  [DIAG] Current term_spread={float(current_row['term_spread'].iloc[0]):.4f}")
+
             _COUNTERFACTUAL_SCENARIOS = [
-                {"label": "VIX spikes to 40", "overrides": {"vix": 40.0}},
-                {"label": "Yield curve inverts -1%", "overrides": {"term_spread": -1.0}},
+                {
+                    "label": "VIX spikes to 40",
+                    "overrides": {
+                        "vix": 40.0,
+                        "vix_zscore": (40.0 - _vix_mean) / _vix_std,
+                        "vix_change_1m": 40.0 - _cur_vix_val,
+                        "vix_change_3m": 40.0 - _cur_vix_val,
+                    },
+                },
+                {
+                    "label": "Yield curve inverts -1%",
+                    "overrides": {
+                        "term_spread": -1.0,
+                        "yield_curve_inverted": 1.0,
+                    },
+                },
                 {
                     "label": "VIX 40 + inverted curve",
-                    "overrides": {"vix": 40.0, "term_spread": -1.0},
+                    "overrides": {
+                        "vix": 40.0,
+                        "vix_zscore": (40.0 - _vix_mean) / _vix_std,
+                        "vix_change_1m": 40.0 - _cur_vix_val,
+                        "vix_change_3m": 40.0 - _cur_vix_val,
+                        "term_spread": -1.0,
+                        "yield_curve_inverted": 1.0,
+                    },
                 },
-                {"label": "VIX falls to 15 (calm)", "overrides": {"vix": 15.0}},
+                {
+                    "label": "VIX falls to 15 (calm)",
+                    "overrides": {
+                        "vix": 15.0,
+                        "vix_zscore": (15.0 - _vix_mean) / _vix_std,
+                        "vix_change_1m": 15.0 - _cur_vix_val,
+                        "vix_change_3m": 15.0 - _cur_vix_val,
+                    },
+                },
             ]
             counterfactual_results = crash_model.run_counterfactual(
                 current_row, _COUNTERFACTUAL_SCENARIOS

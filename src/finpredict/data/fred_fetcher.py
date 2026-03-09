@@ -57,9 +57,16 @@ def fetch_fred_data() -> dict[str, pd.Series]:
         try:
             data = fred.get_series(series_id)
             if data is not None and len(data) > 0:
-                results[name] = data.dropna()
-                latest = float(data.dropna().iloc[-1])
-                print(f"  [OK] {name} ({series_id}): {latest:.2f}")
+                clean = data.dropna()
+                results[name] = clean
+                latest = float(clean.iloc[-1])
+                last_date = clean.index[-1]
+                staleness_days = (pd.Timestamp.now() - last_date).days
+                if staleness_days > 365:
+                    print(f"  [WARN] {name} ({series_id}): last updated {last_date.date()} "
+                          f"({staleness_days}d ago) — may be discontinued")
+                else:
+                    print(f"  [OK] {name} ({series_id}): {latest:.2f}")
         except Exception as e:
             print(f"  [WARN] Failed to fetch {name} ({series_id}): {e}")
 

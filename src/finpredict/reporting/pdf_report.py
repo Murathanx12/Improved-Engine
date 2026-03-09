@@ -468,8 +468,8 @@ def generate_report(
         credit_rows = []
         for key, label in [
             ("ted_spread", "TED Spread (%)"),
-            ("hy_oas", "HY OAS (bps)"),
-            ("ig_oas", "IG OAS (bps)"),
+            ("hy_oas", "HY OAS (%)"),
+            ("ig_oas", "IG OAS (%)"),
         ]:
             if fred_data and key in fred_data and len(fred_data[key]) > 0:
                 series = fred_data[key].dropna()
