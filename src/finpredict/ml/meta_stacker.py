@@ -151,8 +151,8 @@ class MetaStacker:
                     meta_features.append(np.asarray(preds) * regime_probs[: len(preds), 1])
                     feature_names.append(f"{model_name}_x_bear")
 
-        # Stack into matrix
-        min_len = min(len(f) for f in meta_features)
+        # Stack into matrix — include target length to avoid shape mismatch
+        min_len = min(min(len(f) for f in meta_features), len(target))
         X = np.column_stack([f[:min_len] for f in meta_features])
         y = np.asarray(target[:min_len], dtype=float)
 

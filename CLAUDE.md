@@ -100,6 +100,17 @@ src/finpredict/
 - Bug 17: OOS prediction arrays always aligned across horizons (meta-stacker fix)
 - Bug 18: GARCH mean reversion uses persistence parameter (was hardcoded 0.99/0.01)
 - Bug 19: Dead code removed (features.py, monte_carlo.py)
+- Bug 20: Jump-diffusion drift compensator (Merton 1976) — missing -λk term caused ~1.4-2.7%/yr bearish bias
+- Bug 21: Scenario base weights rebalanced — was 87.5% bearish-weighted, now ~65% positive/neutral
+- Bug 22: Institutional benchmarks updated to 2026 published values (added BNY Mellon, updated BlackRock/MS)
+- Bug 23: Added leading indicators ICSA (initial claims) and NFCI (financial conditions) to FRED series
+- Bug 24: Backtest model hyperparameters aligned with defaults (n_estimators=300, hidden_dim=64, epochs=30)
+
+## Known Limitations
+
+- **Bearish bias diagnosis (v7.0 report):** Engine reported -1.5% annualized 5Y return vs +3-6% institutional consensus. Root causes: missing jump compensator (Bug 20), negative-skewed scenarios (Bug 21), lagging indicators dominating SHAP (unemployment z-score at +0.20). Bugs 20-24 address the systematic component; crash model discrimination remains an area for improvement.
+- **Crash model discrimination:** Brier Score 0.193 (BSS -0.39 vs climatology). Models predict well in aggregate but lack leading-indicator features. Adding ICSA/NFCI (Bug 23) is a first step; further work needed on feature engineering with true leading signals.
+- **Stale price sensitivity:** Engine uses cached starting price. A 6% gap between cached and live price shifts 5Y projections by ~1.2% annualized. Consider reducing cache TTL for index prices or fetching live on run.
 
 ## Healthy Output Ranges
 

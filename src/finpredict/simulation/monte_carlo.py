@@ -242,6 +242,15 @@ def simulate_paths(
     jump_std = jump_cfg["std"]  # ~5% jump vol (from data)
     daily_jump_prob = jump_rate * dt
 
+    # ── Jump-diffusion drift compensator (Merton, 1976) ──────────
+    # Without this term, negative jumps mechanically reduce E[S(T)]
+    # below S(0)*exp(μT).  The compensator restores the martingale
+    # property: E[S(T)] = S(0)*exp(μT) regardless of jump parameters.
+    # For log-normal jumps J ~ N(m, s²):  k = exp(m + s²/2) - 1
+    # The drift adjustment is  -λ·k  (positive when jumps are negative).
+    jump_k = np.exp(jump_mean + 0.5 * jump_std**2) - 1  # E[e^J] - 1
+    jump_compensator = -jump_rate * jump_k  # annualized, added to drift
+
     # ═══════════════════════════════════════════════════════════════
     # 4. MEAN REVERSION — calibrated from drawdown recovery data
     # ═══════════════════════════════════════════════════════════════
@@ -330,8 +339,9 @@ def simulate_paths(
         sigma_t = np.clip(sigma_t + d_sigma, 0.04, 1.0)
 
         # ── Price dynamics (GBM with jumps) ───────────────────────
-        # dS/S = (μ - σ²/2)dt + σ·√dt·Z + J·dN
-        drift_daily = base_drift - 0.5 * sigma_t**2 * dt + mr_daily
+        # dS/S = (μ - λk - σ²/2)dt + σ·√dt·Z + J·dN
+        # jump_compensator restores E[S(T)] = S(0)·exp(μT)
+        drift_daily = base_drift + jump_compensator * dt - 0.5 * sigma_t**2 * dt + mr_daily
         diffusion = sigma_t * np.sqrt(dt) * Z_price[t]
 
         # Jump component

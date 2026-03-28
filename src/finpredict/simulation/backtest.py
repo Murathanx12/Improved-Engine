@@ -86,8 +86,10 @@ def run_backtest(
         data.index[-1] - pd.Timedelta(days=forward_days + 30),
         freq=f'{bt_cfg["step_months"]}MS',
     )
-    print(f"  [BACKTEST] step_months={bt_cfg['step_months']}, "
-          f"pred_dates={len(pred_dates)} from {pred_dates[0].date()} to {pred_dates[-1].date()}")
+    print(
+        f"  [BACKTEST] step_months={bt_cfg['step_months']}, "
+        f"pred_dates={len(pred_dates)} from {pred_dates[0].date()} to {pred_dates[-1].date()}"
+    )
 
     # ── Pre-compute features and targets ──────────────────────────
     print("  [ML] Building feature matrix with FRED time series...")
@@ -100,10 +102,10 @@ def run_backtest(
     return_targets = build_target_return_multi(data)
 
     # ── Initialize ML models ──────────────────────────────────────
-    crash_model = CrashPredictor(n_estimators=800)
-    return_model = ReturnPredictor(n_estimators=600)
-    xgb_model = XGBoostCrashPredictor(n_estimators=800)
-    temporal_model = TemporalEnsemble(hidden_dim=128)
+    crash_model = CrashPredictor(n_estimators=300)
+    return_model = ReturnPredictor(n_estimators=300)
+    xgb_model = XGBoostCrashPredictor(n_estimators=300)
+    temporal_model = TemporalEnsemble(hidden_dim=64)
     meta_stacker = MetaStacker()
     crash_timing = CrashTimingClassifier()
     cox_model = CrashSurvivalModel()
@@ -156,6 +158,8 @@ def run_backtest(
                 crash_targets,
                 train_end_idx=idx,
                 min_sequences=400,
+                n_epochs=30,
+                patience=10,
             )
 
             # Train crash timing classifier
@@ -343,6 +347,26 @@ def run_backtest(
                     pass
             oos_predictions["cox"]["3m"].append(cox_3m)
 
+            # Append OOS targets immediately after predictions to keep arrays aligned.
+            # (Previously targets were appended much later, after continue-points that
+            # could break alignment and cause shape mismatches in MetaStacker.)
+            _actual_idx_12m = min(idx + 252, len(data) - 1)
+            _actual_idx_6m = min(idx + 126, len(data) - 1)
+            _actual_idx_3m = min(idx + 63, len(data) - 1)
+
+            def _oos_check_crash(start_idx, end_idx, thresh=-risk_cfg["crash_threshold"]):
+                fwd = data["SP500"].iloc[start_idx : end_idx + 1]
+                pk = fwd.expanding().max()
+                dd = ((fwd - pk) / pk).min()
+                return dd <= thresh
+
+            if "12m" in oos_targets:
+                oos_targets["12m"].append(float(_oos_check_crash(idx, _actual_idx_12m)))
+            if "6m" in oos_targets:
+                oos_targets["6m"].append(float(_oos_check_crash(idx, _actual_idx_6m)))
+            if "3m" in oos_targets:
+                oos_targets["3m"].append(float(_oos_check_crash(idx, _actual_idx_3m)))
+
             # Meta-stacker ensemble prediction
             if meta_stacker.is_trained:
                 model_preds = {
@@ -437,15 +461,6 @@ def run_backtest(
         actual_crash_12m = _check_crash(idx, actual_idx_12m)
         actual_crash_6m = _check_crash(idx, actual_idx_6m)
         actual_crash_3m = _check_crash(idx, actual_idx_3m)
-
-        # Collect OOS targets for meta-stacker training (all horizons).
-        # Always append to keep aligned with prediction arrays.
-        if "12m" in oos_targets:
-            oos_targets["12m"].append(float(actual_crash_12m))
-        if "6m" in oos_targets:
-            oos_targets["6m"].append(float(actual_crash_6m))
-        if "3m" in oos_targets:
-            oos_targets["3m"].append(float(actual_crash_3m))
 
         # MC crash probability (secondary)
         sim_peak = np.maximum.accumulate(paths, axis=0)

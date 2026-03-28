@@ -77,6 +77,8 @@ data:
     lei: USSLIND                      # Conference Board Leading Economic Index
     sloos_ci: DRTSCILM                # Senior Loan Officer Survey: C&I loan tightening
     sloos_cc: DRTSCLCC                # Senior Loan Officer Survey: credit card tightening
+    initial_claims: ICSA              # Initial jobless claims (leading indicator, weekly)
+    nfci: NFCI                        # Chicago Fed National Financial Conditions Index (leading)
 
 
 # ── ML SETTINGS ────────────────────────────────────────────────────────────────
@@ -125,7 +127,7 @@ validation:
 # ── SIMULATION SETTINGS ─────────────────────────────────────────────────────────────
 simulation:
   forecast_years: 5                   # Projection horizon
-  num_simulations: 10000              # Monte Carlo paths
+  num_simulations: 2000               # Monte Carlo paths
   trading_days_per_year: 252          # Standard trading days
 
   # Jump-diffusion parameters
@@ -174,10 +176,10 @@ simulation:
 
 # ── BACKTESTING SETTINGS ────────────────────────────────────────────────────────────
 backtest:
-  step_months: 3                      # Predict every 3 months (~100 predictions)
+  step_months: 6                      # Predict every 6 months (~50 predictions)
   lookback_years: 10                  # History used per prediction point
   forward_days: 252                   # Predict 1 year ahead
-  simulations_per_point: 1000         # Sims per backtest point
+  simulations_per_point: 200          # Sims per backtest point
   transaction_cost: 0.001             # 0.1% per trade
 
 
@@ -217,13 +219,16 @@ risk:
 # These define the base probabilities and parameters for each scenario.
 # Probabilities are adjusted dynamically at runtime based on regime, risk, VIX, etc.
 scenarios:
+  # Weights: ~65% positive/neutral, ~35% bearish (was 87.5% negative-skewed)
+  # Rationale: historical base rates show ~70% of years are positive.
+  # Dynamic adjustment in _adjust_scenario_weights() shifts these at runtime.
   "Base Case":
-    base_probability: 0.30
-    return_multiplier: 1.0            # Multiplied by institutional consensus return
-    absolute_return: null              # If set, overrides return_multiplier
+    base_probability: 0.35              # ↑ from 0.30 — most likely single outcome
+    return_multiplier: 1.0              # Multiplied by institutional consensus return
+    absolute_return: null               # If set, overrides return_multiplier
     volatility: 0.17
     crash_multiplier: 1.0
-    category: neutral                 # bullish / neutral / bearish
+    category: neutral                   # bullish / neutral / bearish
     description: "Historical trends continue with moderate growth"
 
   "AI Productivity Boom":
@@ -245,7 +250,7 @@ scenarios:
     description: "Fed engineers 2-3% inflation, steady growth, no recession"
 
   "Market Correction":
-    base_probability: 0.12
+    base_probability: 0.10              # ↓ from 0.12 — correction != crash
     return_multiplier: 0.40
     absolute_return: null
     volatility: 0.24
@@ -254,18 +259,18 @@ scenarios:
     description: "Valuation normalization, P/E compression, slower growth"
 
   "Stagflation":
-    base_probability: 0.08
+    base_probability: 0.07              # ↓ from 0.08 — low probability environment
     return_multiplier: null
-    absolute_return: 0.01             # ~1% nominal ≈ negative real
+    absolute_return: 0.01               # ~1% nominal ≈ negative real
     volatility: 0.23
     crash_multiplier: 1.8
     category: bearish
     description: "1970s replay: persistent inflation + stagnant growth"
 
   "Recession":
-    base_probability: 0.08
+    base_probability: 0.07              # ↓ from 0.08 — aligned with ~15% hist. rate
     return_multiplier: null
-    absolute_return: -0.02            # -2% annual (includes partial recovery)
+    absolute_return: -0.02              # -2% annual (includes partial recovery)
     volatility: 0.30
     crash_multiplier: 2.5
     category: bearish
@@ -274,16 +279,16 @@ scenarios:
   "AI Bubble Collapse":
     base_probability: 0.06
     return_multiplier: null
-    absolute_return: -0.03            # -3% annual (tech crash + partial recovery)
+    absolute_return: -0.03              # -3% annual (tech crash + partial recovery)
     volatility: 0.32
     crash_multiplier: 2.0
     category: bearish
     description: "Tech mega-cap concentration unwinds, Nasdaq -40%"
 
   "Geopolitical Crisis":
-    base_probability: 0.06
+    base_probability: 0.05              # ↓ from 0.06 — tail risk
     return_multiplier: null
-    absolute_return: -0.05            # -5% annual (severe multi-year crisis)
+    absolute_return: -0.05              # -5% annual (severe multi-year crisis)
     volatility: 0.35
     crash_multiplier: 3.0
     category: bearish
@@ -293,14 +298,16 @@ scenarios:
 # ── INSTITUTIONAL BENCHMARKS ─────────────────────────────────────────────────────────
 # Used to anchor Monte Carlo drift to consensus instead of pure historical returns.
 institutional_benchmarks:
-  Vanguard:         { annual: 0.047, horizon: "10Y", note: "VCMM 10-year forecast" }
-  Schwab:           { annual: 0.059, horizon: "10Y", note: "Long-term capital market expectations" }
-  BlackRock:        { annual: 0.052, horizon: "10Y", note: "Capital market assumptions" }
-  "Morgan Stanley": { annual: 0.080, horizon: "5Y",  note: "2026 bull case estimate" }
+  # Updated 2026-03 — current published capital market assumptions
+  Vanguard:         { annual: 0.047, horizon: "10Y", note: "VCMM 10-year forecast (2026)" }
+  Schwab:           { annual: 0.059, horizon: "10Y", note: "Long-term capital market expectations (2026)" }
+  BlackRock:        { annual: 0.055, horizon: "10Y", note: "2026 capital market assumptions" }
+  "BNY Mellon":     { annual: 0.076, horizon: "10Y", note: "2026 LTCMA — U.S. large cap" }
+  "Morgan Stanley": { annual: 0.068, horizon: "10Y", note: "2026 base case (revised from 5Y bull)" }
   "Goldman Sachs":  { annual: 0.065, horizon: "10Y", note: "Nov 2025 update — raised from 3% to 6.5%" }
   "J.P. Morgan":    { annual: 0.067, horizon: "10Y", note: "2026 LTCMA — U.S. large cap" }
   AQR:              { annual: 0.042, horizon: "10Y", note: "Expected real + inflation" }
-  "Research Affiliates": { annual: 0.031, horizon: "10Y", note: "RAFI expected real return (most bearish)" }
+  "Research Affiliates": { annual: 0.035, horizon: "10Y", note: "RAFI expected real return (most bearish)" }
 
   # Adjustment: slight upward for 5Y vs 10Y horizon
   horizon_adjustment: 1.05
@@ -349,5 +356,5 @@ data_quality:
 
 cache:
   directory: "data_cache"
-  ttl_hours: 1                        # Re-fetch data after this many hours
+  ttl_hours: 720                      # Re-fetch data after this many hours (30 days)
   format: "parquet"                   # parquet or csv
